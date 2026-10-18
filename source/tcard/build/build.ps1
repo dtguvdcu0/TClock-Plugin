@@ -3,8 +3,7 @@ param(
     [ValidateSet('Release')]
     [string]$Configuration = 'Release',
     [ValidateSet('x64')]
-    [string]$Platform = 'x64',
-    [switch]$Test
+    [string]$Platform = 'x64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,18 +11,23 @@ $buildDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tcardRoot = Resolve-Path (Join-Path $buildDir '..')
 $solution = Join-Path $tcardRoot 'TCard.sln'
 $buildRoot = Join-Path $tcardRoot ("out\x64\$Configuration")
-# The public solution contains production projects only; private tests remain optional.
-$testProjects = @(
-    (Join-Path $tcardRoot 'tests\core\core-tests.vcxproj'),
-    (Join-Path $tcardRoot 'tests\renderer\tcwui-card-smoke.vcxproj')
-)
-if ($Test) {
-    foreach ($testProject in $testProjects) {
-        if (-not (Test-Path -LiteralPath $testProject -PathType Leaf)) {
-            throw 'The -Test option requires the private local test sources, which are not included in public source.'
-        }
+# Resolve tools before downloads or interacting with build-output processes.
+$msbuild = $env:MSBUILD
+if ([string]::IsNullOrWhiteSpace($msbuild)) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere) {
+        $msbuild = & $vswhere -latest -products '*' -version '[18.0,19.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'MSBuild\Current\Bin\MSBuild.exe' | Select-Object -First 1
     }
+    if ([string]::IsNullOrWhiteSpace($msbuild)) { $msbuild = 'MSBuild.exe' }
 }
+$msbuildCommand = Get-Command $msbuild -CommandType Application -ErrorAction SilentlyContinue
+if (-not $msbuildCommand) { throw 'MSBuild was not found. Install Visual Studio 2026 C++ build tools (v145), or set MSBUILD.' }
+$msbuild = $msbuildCommand.Source
+$versionOutput = & $msbuild -nologo -version
+if ($LASTEXITCODE -ne 0 -or [version]($versionOutput | Select-Object -Last 1) -lt [version]'18.0') {
+    throw 'TCard requires Visual Studio 2026 MSBuild and the v145 C++ toolset.'
+}
+$null = Get-Command cmake -CommandType Application -ErrorAction Stop
 
 function Stop-TCardForBuild {
     $allowedPaths = @(
@@ -83,27 +87,9 @@ foreach ($signalProcess in @(Get-Process -Name TCardSignal -ErrorAction Silently
 Assert-SyncArtifactIdle
 Stop-TCardForBuild
 
-$msbuild = $env:MSBUILD
-if ([string]::IsNullOrWhiteSpace($msbuild)) {
-    $candidates = @(
-        (Join-Path ${env:ProgramFiles} 'Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe'),
-        'msbuild'
-    )
-    $msbuild = $candidates | Where-Object { $_ -eq 'msbuild' -or (Test-Path -LiteralPath $_) } | Select-Object -First 1
-}
-if ([string]::IsNullOrWhiteSpace($msbuild)) { throw 'MSBuild.exe was not found. Set the MSBUILD environment variable.' }
-
 & (Join-Path $buildDir 'sync-dependencies.ps1')
 & $msbuild $solution /m /nr:false /p:Configuration=$Configuration /p:Platform=$Platform /v:minimal
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-# Preserve existing local builds when private test projects are available.
-foreach ($testProject in $testProjects) {
-    if (Test-Path -LiteralPath $testProject -PathType Leaf) {
-        & $msbuild $testProject /m /nr:false /p:Configuration=$Configuration /p:Platform=$Platform /v:minimal
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
-}
 $languageSource = Join-Path $tcardRoot 'lang'
 $languageBuild = Join-Path $buildRoot 'plugins\tcard\lang'
 if (Test-Path -LiteralPath $languageSource) {
@@ -117,33 +103,8 @@ $signalArtifact = Join-Path $buildRoot 'plugins\TCardSignal.exe'
 if (-not (Test-Path -LiteralPath $signalArtifact)) { throw 'Optional-distribution TCardSignal executable was not built.' }
 $syncArtifact = Join-Path $buildRoot 'plugins\TCardSync.exe'
 if (-not (Test-Path -LiteralPath $syncArtifact)) { throw 'TCardSync executable was not built.' }
-$renderer = Join-Path $buildRoot 'plugins\tcwui-card.dll'
-$coreTests = Join-Path $tcardRoot "out\tests\core\tcard-native-core-tests.exe"
-$rendererTests = Join-Path $tcardRoot "out\tests\renderer\tcwui-card-smoke.exe"
 $icon = Join-Path $tcardRoot 'icon3.ico'
 if (-not (Test-Path -LiteralPath $icon)) { throw "Icon asset not found: $icon" }
 $buildIcon = Join-Path $buildRoot 'plugins\icon3.ico'
 New-Item -ItemType Directory -Path (Split-Path -Parent $buildIcon) -Force | Out-Null
 Copy-Item -LiteralPath $icon -Destination $buildIcon -Force
-if ($Test) {
-    $testLogRoot = Join-Path $tcardRoot 'out\tests\logs'
-    New-Item -ItemType Directory -Path $testLogRoot -Force | Out-Null
-    foreach ($testExecutable in @($coreTests, $rendererTests)) {
-        $testLogName = [IO.Path]::GetFileNameWithoutExtension($testExecutable)
-        $testStart = @{ FilePath = $testExecutable; PassThru = $true; WindowStyle = 'Hidden'
-            RedirectStandardOutput = (Join-Path $testLogRoot ($testLogName + '.stdout.log'))
-            RedirectStandardError = (Join-Path $testLogRoot ($testLogName + '.stderr.log')) }
-        if ($testExecutable -eq $rendererTests) { $testStart.ArgumentList = '"' + $renderer + '"' }
-        $testProcess = Start-Process @testStart
-        $null = $testProcess.Handle # Retain the owned handle before waiting so ExitCode remains available.
-        # The core suite includes real reconnect backoff and subprocess fault windows.
-        $testTimeout = if ($testExecutable -eq $coreTests) { 300000 } else { 120000 }
-        if (-not $testProcess.WaitForExit($testTimeout)) {
-            throw "Test timed out: $testExecutable. Owned PID $($testProcess.Id) is preserved for normal shutdown; logs: $testLogRoot"
-        }
-        $testProcess.WaitForExit()
-        if ($testProcess.ExitCode -ne 0) { throw "Test failed ($($testProcess.ExitCode)): $testExecutable" }
-        Write-Output "PASS: $testExecutable"
-    }
-}
-

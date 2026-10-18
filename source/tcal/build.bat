@@ -4,11 +4,11 @@ setlocal
 :: Windows build script for MSVC with CMake.
 :: Usage: build.bat [Release|Debug] [build_dir]
 
-set CONFIG=%1
-if "%CONFIG%"=="" set CONFIG=Release
+set "CONFIG=%~1"
+if "%CONFIG%"=="" set "CONFIG=Release"
 
-set BUILD_DIR=%2
-if "%BUILD_DIR%"=="" set BUILD_DIR=build-vs
+set "BUILD_DIR=%~2"
+if "%BUILD_DIR%"=="" set "BUILD_DIR=build-vs"
 
 set GENERATOR=
 if not "%GENERATOR_OVERRIDE%"=="" set GENERATOR=%GENERATOR_OVERRIDE%
@@ -52,7 +52,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cmake --build "%BUILD_DIR%" --config %CONFIG%
+cmake --build "%BUILD_DIR%" --config "%CONFIG%"
 if errorlevel 1 (
     echo Build failed.
     popd

@@ -1,11 +1,11 @@
 @echo off
 setlocal
 
-set CONFIG=%~1
-if "%CONFIG%"=="" set CONFIG=Release
+set "CONFIG=%~1"
+if "%CONFIG%"=="" set "CONFIG=Release"
 
-set BUILD_DIR=%~2
-if "%BUILD_DIR%"=="" set BUILD_DIR=build
+set "BUILD_DIR=%~2"
+if "%BUILD_DIR%"=="" set "BUILD_DIR=build"
 
 if not "%3"=="" (
     echo ERROR: build.bat no longer accepts a verify argument.
@@ -41,7 +41,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cmake --build "%BUILD_DIR%" --config %CONFIG%
+cmake --build "%BUILD_DIR%" --config "%CONFIG%"
 if errorlevel 1 (
     echo Build failed.
     popd

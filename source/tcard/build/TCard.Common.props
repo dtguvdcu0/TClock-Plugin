@@ -3,24 +3,23 @@
   <PropertyGroup>
     <TCardRoot Condition="'$(TCardRoot)'==''">$(MSBuildThisFileDirectory)..\</TCardRoot>
     <TCardBuildRoot Condition="'$(TCardBuildRoot)'==''">$(TCardRoot)out\x64\$(Configuration)\</TCardBuildRoot>
-    <TCardTestRoot Condition="'$(TCardTestRoot)'==''">$(TCardRoot)out\tests\</TCardTestRoot>
     <TCardObjRoot Condition="'$(TCardObjRoot)'==''">$(TCardRoot)out\obj\$(Platform)\$(Configuration)\</TCardObjRoot>
   </PropertyGroup>
   <Import Project="$(TCardRoot)out\deps\wolfssl.props" />
-  <ItemGroup Condition="'$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card' Or '$(ProjectName)'=='tcwui-card-smoke'">
+  <ItemGroup Condition="'$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card'">
     <ClCompile Include="$(TCardRoot)third_party\md4c\md4c.c"><PreprocessorDefinitions>MD4C_USE_UTF16;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions><WarningLevel>Level3</WarningLevel></ClCompile>
     <ClCompile Include="$(TCardRoot)third_party\md4c\entity.c"><WarningLevel>Level3</WarningLevel></ClCompile>
   </ItemGroup>
-  <ItemGroup Condition="'$(ProjectName)'=='tcard-native-core-tests' Or '$(ProjectName)'=='tcard-sync'">
+  <ItemGroup Condition="'$(ProjectName)'=='tcard-sync'">
     <ClCompile Include="$(TCardRoot)third_party\md4c\md4c.c"><PreprocessorDefinitions>MD4C_USE_UTF16;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions><WarningLevel>Level3</WarningLevel></ClCompile>
     <ClCompile Include="$(TCardRoot)third_party\md4c\entity.c"><WarningLevel>Level3</WarningLevel></ClCompile>
   </ItemGroup>
-  <ItemDefinitionGroup Condition="'$(ProjectName)'=='tcard-signal' Or '$(ProjectName)'=='tcard-sync-native' Or '$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card' Or '$(ProjectName)'=='tcwui-card-smoke' Or '$(ProjectName)'=='tcard-native-core-tests' Or '$(ProjectName)'=='tcard-sync'">
+  <ItemDefinitionGroup Condition="'$(ProjectName)'=='tcard-signal' Or '$(ProjectName)'=='tcard-sync-native' Or '$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card' Or '$(ProjectName)'=='tcard-sync'">
     <ClCompile><AdditionalIncludeDirectories>$(TCardWolfSslBuildRoot);$(TCardWolfSslSourceRoot);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ClCompile>
     <!-- The TLS static library retains WinSock link references; TCard does not call sync transport. -->
     <Link><AdditionalDependencies>ws2_32.lib;$(TCardWolfSslBuildRoot)\Release\wolfssl.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
-  <ItemGroup Condition="'$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card' Or '$(ProjectName)'=='tcwui-card-smoke' Or '$(ProjectName)'=='tcard-native-core-tests' Or '$(ProjectName)'=='tcard-sync'">
+  <ItemGroup Condition="'$(ProjectName)'=='tcard-native-host' Or '$(ProjectName)'=='winuidll-card' Or '$(ProjectName)'=='tcard-sync'">
     <ClCompile Include="$(TCardRoot)core\card_storage.cpp" />
     <ClCompile Include="$(TCardRoot)core\card_storage_transition.cpp" />
     <ClCompile Include="$(TCardRoot)core\card_sync_crypto.cpp" />

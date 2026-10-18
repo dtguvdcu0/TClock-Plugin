@@ -28,3 +28,14 @@ target_link_libraries(TCapture PRIVATE
     OleAut32
     Windowscodecs
 )
+
+# Stage only shipped language files, never local backups or settings.
+foreach(language IN ITEMS en ja)
+    add_custom_command(TARGET TCapture POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TCapture>/tcapture/lang/${language}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/lang/${language}/strings.ini"
+            "$<TARGET_FILE_DIR:TCapture>/tcapture/lang/${language}/strings.ini"
+        VERBATIM
+    )
+endforeach()

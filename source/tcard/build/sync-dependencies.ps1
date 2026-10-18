@@ -28,16 +28,19 @@ try {
     $archive = Join-Path $generationRoot 'source.zip'
     $receiptPath = Join-Path $generationRoot 'download.json'
     New-Item -ItemType Directory -Path $generationRoot -Force | Out-Null
-    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
         $pending = Join-Path $generationRoot ([Guid]::NewGuid().ToString('N') + '.partial')
         try {
             Invoke-WebRequest -UseBasicParsing -Uri $release.zipball_url -Headers @{ 'User-Agent' = 'TCard-build' } -OutFile $pending -TimeoutSec 120
             $receipt = @{ releaseId = $releaseId; tag = $release.tag_name; url = $release.zipball_url; sha256 = (Get-ArchiveHash $pending) }
             # Hashes here detect later cache corruption; they are not an upstream signature.
-            Move-Item -LiteralPath $pending -Destination $archive
-            [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath $pending -Destination $archive -Force
+            [IO.File]::WriteAllText(($pending + '.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath ($pending + '.json') -Destination $receiptPath -Force
         } finally {
             if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending }
+            if (Test-Path -LiteralPath ($pending + '.json')) { Remove-Item -LiteralPath ($pending + '.json') }
         }
     }
 } finally { [Net.ServicePointManager]::SecurityProtocol = $previousProtocol }
