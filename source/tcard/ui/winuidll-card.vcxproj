@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectName>winuidll-card</ProjectName><ProjectGuid>{8C29C1C7-05AC-4AA3-93C9-1260DBA8D2C4}</ProjectGuid><RootNamespace>winuidll_card</RootNamespace><Keyword>Win32Proj</Keyword></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet><WholeProgramOptimization>true</WholeProgramOptimization></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(ProjectDir)..\build\TCard.Common.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><TargetName>tcwui-card</TargetName><OutDir>$(TCardBuildRoot)plugins\</OutDir><IntDir>$(TCardObjRoot)winuidll-card\</IntDir><LinkIncremental>false</LinkIncremental><GenerateManifest>false</GenerateManifest></PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><ClCompile><AdditionalOptions>/utf-8 /MP %(AdditionalOptions)</AdditionalOptions><Optimization>Full</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;UNICODE;_UNICODE;TCARD_WUI_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions><ConformanceMode>true</ConformanceMode><WarningLevel>Level4</WarningLevel><RuntimeLibrary>MultiThreaded</RuntimeLibrary><LanguageStandard>stdcpp20</LanguageStandard><DebugInformationFormat>ProgramDatabase</DebugInformationFormat></ClCompile><Link><SubSystem>Windows</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences><ModuleDefinitionFile>carddll.def</ModuleDefinitionFile><AdditionalOptions>/DYNAMICBASE /NXCOMPAT %(AdditionalOptions)</AdditionalOptions><TargetMachine>MachineX64</TargetMachine></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="carddll.cpp" /><ClInclude Include="card_api.h" /><ClInclude Include="card_theme.h" /><None Include="carddll.def" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

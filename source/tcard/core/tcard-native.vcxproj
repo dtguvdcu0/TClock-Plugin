@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectName>tcard-native</ProjectName><ProjectGuid>{A16D1A4D-22EA-46B1-95A6-11FD2F0910B2}</ProjectGuid><RootNamespace>tcard_native</RootNamespace><Keyword>Win32Proj</Keyword></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>StaticLibrary</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet><WholeProgramOptimization>false</WholeProgramOptimization></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(ProjectDir)..\build\TCard.Common.props" /><ImportGroup Label="ExtensionSettings" /><ImportGroup Label="Shared" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><OutDir>$(TCardBuildRoot)</OutDir><IntDir>$(TCardObjRoot)tcard-native\</IntDir><TargetName>tcard-native</TargetName></PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"><ClCompile><AdditionalOptions>/utf-8 /MP %(AdditionalOptions)</AdditionalOptions><Optimization>Full</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><PreprocessorDefinitions>WIN32;NDEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><ConformanceMode>true</ConformanceMode><WarningLevel>Level4</WarningLevel><LanguageStandard>stdcpp20</LanguageStandard><RuntimeLibrary>MultiThreaded</RuntimeLibrary><DebugInformationFormat>None</DebugInformationFormat></ClCompile></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="tcard_core.cpp" /><ClCompile Include="card_sync.cpp" /><ClCompile Include="card_replacement.cpp" /><ClInclude Include="tcard_core.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" /><ImportGroup Label="ExtensionTargets" />
+</Project>

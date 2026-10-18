@@ -1,0 +1,1280 @@
+:root {
+  --font-family: "Segoe UI", system-ui, sans-serif;
+  --font-size: 14px;
+  --calendar-date-font-size: 13px;
+  --task-font-size: 14px;
+  --line-height: 1.4;
+  --surface: #f5f6f8;
+  --panel: #ffffff;
+  --text: #1b1f24;
+  --accent: #0a65cc;
+  --accent-hover: #0759b8;
+  --control: rgba(255, 255, 255, 0.78);
+  --control-hover: rgba(255, 255, 255, 0.95);
+  --control-active: #e9f2ff;
+  --border: #d9dde3;
+  --shadow: 0 18px 42px rgba(31, 41, 55, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  color: var(--text);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(239, 244, 249, 0.9)),
+    radial-gradient(circle at 20% 0%, rgba(170, 214, 255, 0.32), transparent 34%),
+    var(--surface);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+select,
+input[type="text"],
+input[type="number"],
+input[type="time"],
+textarea {
+  border: 1px solid rgba(128, 139, 153, 0.34);
+  border-radius: 8px;
+  background-color: var(--control);
+  color: var(--text);
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 80ms ease;
+}
+
+button {
+  min-height: 32px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+button:hover,
+select:hover,
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="time"]:hover,
+textarea:hover {
+  background-color: var(--control-hover);
+  border-color: rgba(85, 102, 121, 0.48);
+}
+
+button:active {
+  transform: translateY(1px);
+  background-color: var(--control-active);
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 101, 204, 0.18);
+}
+
+select {
+  appearance: none;
+  padding-right: 32px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #5d6977 50%),
+    linear-gradient(135deg, #5d6977 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 50%,
+    calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+* {
+  scrollbar-color: rgba(104, 116, 132, 0.62) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(104, 116, 132, 0.42);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(85, 99, 117, 0.62);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.app {
+  width: calc(100vw - 16px);
+  max-width: 1400px;
+  margin: 6px auto;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 8px minmax(340px, 460px);
+  grid-template-areas:
+    "topbar topbar topbar"
+    "grid splitter panel";
+  align-items: start;
+  gap: 12px;
+}
+
+.topbar {
+  grid-area: topbar;
+  display: grid;
+  grid-template-columns: inherit;
+  align-items: center;
+  gap: 0;
+}
+
+.calendarTopbar {
+  grid-column: 1;
+  display: grid;
+  grid-template-columns: 42px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+#monthTitle {
+  margin: 0;
+  line-height: 1.15;
+}
+
+.topbarActions {
+  grid-column: 3;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.windowCloseButton {
+  min-width: 36px;
+  width: 36px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.windowCloseButton:hover {
+  background-color: rgba(220, 53, 69, 0.12);
+  border-color: rgba(220, 53, 69, 0.4);
+}
+
+.monthTitleText {
+  display: inline-block;
+  cursor: text;
+  padding-inline: 2px;
+}
+
+.gridWrap {
+  grid-area: grid;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 8px;
+  gap: 8px;
+}
+
+.calendarHeightSplitter {
+  cursor: row-resize;
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, transparent, rgba(67, 80, 96, 0.18), transparent),
+    rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(119, 132, 149, 0.22);
+}
+
+.calendarHeightSplitter:hover {
+  background:
+    linear-gradient(90deg, transparent, rgba(10, 101, 204, 0.36), transparent),
+    rgba(255, 255, 255, 0.78);
+}
+
+.calendarHeightSplitter:focus-visible,
+.layoutSplitter:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(10, 101, 204, 0.18);
+}
+
+.layoutSplitter {
+  grid-area: splitter;
+  align-self: start;
+  cursor: col-resize;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, transparent, rgba(67, 80, 96, 0.2), transparent),
+    rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(119, 132, 149, 0.22);
+  min-height: 260px;
+}
+
+.layoutSplitter:hover {
+  background:
+    linear-gradient(180deg, transparent, rgba(10, 101, 204, 0.36), transparent),
+    rgba(255, 255, 255, 0.78);
+}
+
+body.hideTaskPanel .app {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "topbar"
+    "grid";
+}
+
+body.hideTaskPanel .layoutSplitter,
+body.hideTaskPanel .dayPanel {
+  display: none;
+}
+
+body.hideTaskPanel .topbar {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+body.hideTaskPanel .calendarTopbar,
+body.hideTaskPanel .topbarActions {
+  grid-column: 1;
+}
+
+body.hideTaskPanel .topbarActions {
+  justify-content: flex-start;
+}
+
+body.isResizingPanels {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.isResizingCalendarHeight {
+  cursor: row-resize;
+  user-select: none;
+}
+
+.topbar button {
+  border-radius: 8px;
+  height: 36px;
+}
+
+.monthGrid {
+  min-height: 320px;
+  height: clamp(320px, calc(100vh - 210px), 840px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 2px rgba(31, 41, 55, 0.04);
+}
+
+.dayPanel {
+  grid-area: panel;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(31, 41, 55, 0.04);
+}
+
+.viewControls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.viewControls label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #4f5966;
+}
+
+.viewControls select,
+.viewControls input {
+  height: 30px;
+  padding: 0 8px;
+}
+
+.isHidden {
+  display: none !important;
+}
+
+#taskForm {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#taskForm input,
+#taskForm button {
+  height: 36px;
+}
+
+#taskForm button,
+.settingsActions button:last-child {
+  border-color: transparent;
+  background-color: var(--accent);
+  color: #fff;
+}
+
+#taskForm button:hover,
+.settingsActions button:last-child:hover {
+  background-color: var(--accent-hover);
+}
+
+
+
+.weekdayRow {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.weekdayCell {
+  text-align: center;
+  color: #66707c;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.daysGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(6, minmax(44px, 1fr));
+  gap: 6px;
+  flex: 1;
+}
+
+.dayCell {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 8px;
+  min-height: 44px;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.dayCell.isOutside {
+  color: #95a0ad;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.dayCell.isToday {
+  border-color: rgba(10, 101, 204, 0.34);
+  background: rgba(235, 245, 255, 0.9);
+}
+
+.dayCell.isHoliday {
+  border-color: rgba(190, 94, 94, 0.26);
+  background: rgba(255, 248, 248, 0.9);
+}
+
+.dayCell.isSelected {
+  border-color: var(--accent);
+  background: rgba(227, 239, 255, 0.98);
+  box-shadow: 0 0 0 2px rgba(10, 101, 204, 0.22);
+}
+
+.dayCell.isToday.isSelected {
+  border-color: var(--accent);
+  background: rgba(219, 235, 255, 1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.9) inset,
+    0 0 0 3px rgba(10, 101, 204, 0.22);
+}
+
+.dayCell .dateLabel {
+  font-size: var(--calendar-date-font-size);
+  font-weight: 600;
+}
+
+.dayCell .dateLabel.isSunday {
+  color: #c45a5a;
+}
+
+.dayCell .dateLabel.isSaturday {
+  color: #4f77bf;
+}
+
+.dayCell.isOutside .dateLabel.isSunday {
+  color: #d6a2a2;
+}
+
+.dayCell.isOutside .dateLabel.isSaturday {
+  color: #9fb3d9;
+}
+
+
+.dayCell .dateTaskMarker {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.72em;
+  line-height: 1;
+  transform: translateY(-0.42em);
+  opacity: 0.72;
+  color: #5f6b78;
+}
+
+.dayCell.isOutside .dateTaskMarker {
+  opacity: 0.4;
+}
+
+.dayCell .dateHolidayMarker {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.72em;
+  line-height: 1;
+  transform: translateY(-0.42em);
+  opacity: 0.82;
+  color: #c45a5a;
+}
+
+.dayCell.isOutside .dateHolidayMarker {
+  opacity: 0.45;
+}
+
+
+taskList,
+#taskList {
+  font-size: var(--task-font-size);
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px;
+}
+
+.taskRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 5px 8px;
+  border-radius: 8px;
+}
+
+.taskRowInteractive,
+.timelineTaskRow.taskRowInteractive,
+.timelinePerTaskTop.taskRowInteractive {
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    border-color 120ms ease;
+}
+
+.taskRowInteractive:hover,
+.timelineTaskRow.taskRowInteractive:hover,
+.timelinePerTaskTop.taskRowInteractive:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.taskRowInteractive:focus-visible,
+.timelineTaskRow.taskRowInteractive:focus-visible,
+.timelinePerTaskTop.taskRowInteractive:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(10, 101, 204, 0.18);
+}
+
+.taskTitle.isDone {
+  color: #7b8794;
+  text-decoration: line-through;
+  opacity: 0.78;
+}
+
+.taskRow.isDone,
+.timelineTaskRow.isDone,
+.timelinePerTaskTop.isDone {
+  background: rgba(246, 248, 251, 0.72);
+}
+
+.taskRow.isDone:hover,
+.timelineTaskRow.isDone:hover,
+.timelinePerTaskTop.isDone:hover {
+  background: rgba(242, 245, 249, 0.94);
+}
+
+
+.taskTitle {
+  display: inline-grid;
+  grid-template-columns: auto auto 5ch 1ch minmax(0, 1fr);
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.taskMetaDate,
+.taskMetaTime,
+.taskMetaSep {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.taskMetaTime {
+  display: inline-block;
+  width: 5ch;
+}
+
+.taskMetaGap {
+  display: inline-block;
+  width: 1ch;
+}
+
+.taskMetaMain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskDelete {
+  margin-left: auto;
+  border-radius: 6px;
+  min-width: 58px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #5c2d2d;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.taskDelete:hover {
+  background: rgba(255, 237, 237, 0.92);
+  border-color: rgba(186, 91, 91, 0.38);
+}
+
+.taskActionGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  opacity: 0;
+  transform: translateX(4px);
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.taskActionGroup .taskDelete {
+  margin-left: 0;
+}
+
+.taskRowInteractive:hover .taskActionGroup,
+.taskRowInteractive:focus-within .taskActionGroup,
+.taskRowInteractive:focus-visible .taskActionGroup,
+.timelineTaskRow.taskRowInteractive:hover .taskActionGroup,
+.timelineTaskRow.taskRowInteractive:focus-within .taskActionGroup,
+.timelineTaskRow.taskRowInteractive:focus-visible .taskActionGroup,
+.timelinePerTaskTop.taskRowInteractive:hover .taskActionGroup,
+.timelinePerTaskTop.taskRowInteractive:focus-within .taskActionGroup,
+.timelinePerTaskTop.taskRowInteractive:focus-visible .taskActionGroup {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.taskEmpty {
+  color: #6c7682;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+
+.taskEdit {
+  border-radius: 6px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.taskModalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.taskModal {
+  width: min(520px, calc(100vw - 24px));
+  max-height: min(82vh, 720px);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(128, 139, 153, 0.34);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  box-shadow: var(--shadow);
+  overflow: auto;
+}
+
+.settingsStatusList {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.settingsSubscriptionList {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.settingsSubscriptionItem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(128, 139, 153, 0.24);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.settingsSubscriptionCheckbox {
+  margin: 0;
+  justify-self: start;
+}
+
+.settingsSubscriptionLabel {
+  display: block;
+  min-width: 0;
+  font-size: 13px;
+  color: #23303c;
+}
+
+.settingsSubscriptionPathText {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settingsSubscriptionBadge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 139, 153, 0.24);
+  color: #55606d;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.settingsSubscriptionEmpty {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #6c7682;
+}
+
+.settingsStatusItem {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(128, 139, 153, 0.24);
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.settingsStatusHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.settingsStatusPath,
+.settingsStatusError,
+.settingsStatusEmpty {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settingsStatusPath {
+  word-break: break-all;
+  color: #47515d;
+}
+
+.settingsStatusError {
+  color: #9a3c3c;
+}
+
+.settingsStatusEmpty {
+  color: #6c7682;
+}
+
+.taskModal h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.taskModal label {
+  font-size: 12px;
+  color: #4f5966;
+}
+
+.taskModalField {
+  display: grid;
+  gap: 5px;
+}
+
+.taskModalTimeRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.taskModalInlineCheck {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 34px;
+  font-size: 12px;
+  color: #4f5966;
+}
+
+.taskModalInlineCheck input[type="checkbox"] {
+  margin: 0;
+}
+
+.taskModal input,
+.taskModal textarea {
+  width: 100%;
+  padding: 8px 10px;
+}
+
+.taskModal textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.taskModalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.taskModalActions button {
+  height: 32px;
+  border-radius: 8px;
+  padding: 0 12px;
+}
+
+.taskModalActions .primary {
+  border-color: transparent;
+  background-color: var(--accent);
+  color: #fff;
+}
+
+.taskModalActions .primary:hover {
+  background-color: var(--accent-hover);
+}
+
+.settingsModal {
+  width: min(720px, 94vw);
+  max-height: min(82vh, 860px);
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  background: rgba(248, 250, 252, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.settingsHeader {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.settingsHeader h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.settingsIntro {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #4f5966;
+}
+
+.settingsBody {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 14px;
+  padding: 14px 18px 22px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.settingsSection {
+  border: 1px solid rgba(128, 139, 153, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 10px;
+  display: grid;
+  gap: 0;
+}
+
+.settingsSection h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #44505d;
+}
+
+.settingsRow {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 2px;
+  border-top: 1px solid rgba(128, 139, 153, 0.14);
+}
+
+.settingsSection h4 + .settingsRow {
+  border-top: 0;
+}
+
+.settingsRowSingle {
+  grid-template-columns: 1fr;
+}
+
+.settingsRowWide {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.settingsRowWide .settingsValue {
+  width: 100%;
+}
+
+.settingsHolidayRow .settingsSubscriptionList {
+  margin-top: 0;
+}
+
+.settingsRowSingle .settingsCheckboxWrap {
+  justify-self: start;
+}
+
+.settingsLabel {
+  display: inline-block;
+  font-size: 12px;
+  color: #5a6572;
+}
+
+.settingsValue {
+  display: grid;
+  gap: 4px;
+}
+
+.settingsValue input[type="text"],
+.settingsValue input[type="number"] {
+  height: 34px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.settingsHint {
+  font-size: 11px;
+  color: #6b7582;
+}
+
+.settingsCheckboxWrap {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 13px;
+  width: 100%;
+}
+
+.settingsCheckboxWrap input[type="checkbox"],
+.taskModalInlineCheck input[type="checkbox"] {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 22px;
+  border: 1px solid rgba(104, 116, 132, 0.62);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.settingsCheckboxWrap input[type="checkbox"]::before,
+.taskModalInlineCheck input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: #5f6b78;
+  transition:
+    transform 120ms ease,
+    background-color 120ms ease;
+}
+
+.settingsCheckboxWrap input[type="checkbox"]:checked,
+.taskModalInlineCheck input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.settingsCheckboxWrap input[type="checkbox"]:checked::before,
+.taskModalInlineCheck input[type="checkbox"]:checked::before {
+  transform: translateX(18px);
+  background: #fff;
+}
+
+.settingsCheckboxWrap input[type="checkbox"]:focus-visible,
+.taskModalInlineCheck input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(10, 101, 204, 0.18);
+}
+
+.settingsActions {
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+@media (max-width: 760px) {
+  .settingsRow {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .settingsLabel {
+    padding-top: 0;
+  }
+
+  .taskModalTimeRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+.compactPanels,
+.settingsIcon {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "topbar"
+      "switcher"
+      "grid"
+      "panel";
+  }
+
+  .layoutSplitter {
+    display: none;
+  }
+
+  .topbar,
+  body.hideTaskPanel .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .calendarTopbar {
+    grid-column: 1;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    gap: 4px;
+  }
+
+  #monthTitle { font-size: clamp(18px, 4vw, 26px); }
+  .topbarActions,
+  body.hideTaskPanel .topbarActions {
+    grid-column: 2;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .windowCloseButton {
+    position: static;
+  }
+  .compactPanels {
+    grid-area: switcher;
+    display: flex;
+    gap: 8px;
+  }
+  .compactPanels button { flex: 1; }
+  .compactPanels button[aria-pressed="true"] {
+    color: #fff;
+    background: #0969da;
+    border-color: #0969da;
+  }
+  body:not(.compactTasks) .dayPanel,
+  body.compactTasks .gridWrap,
+  body.hideTaskPanel .compactPanels {
+    display: none;
+  }
+  body.hideTaskPanel .app {
+    grid-template-areas: "topbar" "grid";
+  }
+}
+
+@media (max-width: 480px) {
+  .settingsText { display: none; }
+  .settingsIcon { display: inline; }
+  #settingsButton { min-width: 36px; padding-inline: 6px; }
+}
+
+
+.timelineView {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.timelineDay {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.timelineDayHeader {
+  font-size: 12px;
+  font-weight: 600;
+  color: #44505d;
+  margin-bottom: 6px;
+}
+
+.timelineTrack {
+  position: relative;
+  height: 34px;
+  border: 1px solid #e4e8ee;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      #f5f7fa 0,
+      #f5f7fa calc(100% / 24 - 1px),
+      #e8edf4 calc(100% / 24 - 1px),
+      #e8edf4 calc(100% / 24)
+    );
+}
+
+.timelineHourAxis {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+  font-size: 10px;
+  color: #6c7682;
+  margin-bottom: 4px;
+}
+
+.timelineHourAxis span {
+  text-align: left;
+}
+
+.timelineBars {
+  position: absolute;
+  inset: 0;
+}
+
+.timelineBar {
+  position: absolute;
+  top: 6px;
+  height: 20px;
+  border-radius: 5px;
+  background: rgba(10, 101, 204, 0.82);
+  color: #fff;
+  font-size: 11px;
+  line-height: 20px;
+  padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timelinePoint {
+  position: absolute;
+  top: 7px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #163b66;
+  white-space: nowrap;
+}
+
+.timelinePoint::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0a65cc;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.timelineUntimed {
+  margin-top: 6px;
+  color: #2d3742;
+}
+
+.timelineUntimedItem {
+  margin-top: 2px;
+}
+
+.timelineTaskList {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.timelineTaskRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+.timelineTaskLabel {
+  display: inline-grid;
+  grid-template-columns: 5ch 1ch minmax(0, 1fr);
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.timelineTaskTime {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.timelineTaskGap {
+  width: 1ch;
+}
+
+.timelineTaskTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timelineTaskRow.isDone .timelineTaskLabel,
+.timelinePerTaskTop.isDone .timelineTaskLabel,
+.timelinePerTaskItem.isDone .timelineTaskLabel {
+  color: #7b8794;
+  opacity: 0.8;
+  text-decoration: line-through;
+}
+
+.timelinePerTaskList {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.timelinePerTaskItem {
+  border: 1px solid #e4e8ee;
+  border-radius: 6px;
+  padding: 5px;
+  background: rgba(251, 252, 254, 0.82);
+  display: grid;
+  gap: 4px;
+}
+
+.timelinePerTaskItem.isDone {
+  background: rgba(246, 248, 251, 0.82);
+  border-color: rgba(210, 217, 226, 0.9);
+}
+
+.timelinePerTaskTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 1px 2px;
+  border-radius: 8px;
+}
+
+.timelinePerTaskTop .timelineTaskLabel {
+  flex: 1;
+}
+
+.timelinePerTaskTrack {
+  position: relative;
+  height: 26px;
+  border: 1px solid #e4e8ee;
+  border-radius: 6px;
+  background:
+    repeating-linear-gradient(
+      to right,
+      #f6f8fb 0,
+      #f6f8fb calc(100% / 24 - 1px),
+      #e8edf4 calc(100% / 24 - 1px),
+      #e8edf4 calc(100% / 24)
+    );
+}
+
+.timelinePerTaskTrack .timelineBars {
+  position: absolute;
+  inset: 0;
+}
+
+.timelinePerTaskTrack .timelineBar {
+  top: 3px;
+  height: 18px;
+  line-height: 18px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.timelinePerTaskTrack .timelinePoint {
+  top: 4px;
+}
+
+@media (max-width: 1200px) {
+  .viewControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

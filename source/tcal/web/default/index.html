@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TCalendar</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="calendarTopbar">
+        <button id="prevMonth" type="button" aria-label="Previous month">&lt;</button>
+        <h1 id="monthTitle">TCalendar</h1>
+        <button id="nextMonth" type="button" aria-label="Next month">&gt;</button>
+      </div>
+      <div class="topbarActions">
+        <button id="settingsButton" type="button" aria-label="Settings" title="Settings"><span class="settingsText">Settings</span><span class="settingsIcon" aria-hidden="true">&#9881;</span></button>
+        <button id="closeButton" class="windowCloseButton" type="button" aria-label="Close window">&times;</button>
+      </div>
+    </header>
+
+    <nav class="compactPanels" aria-label="View">
+      <button id="showCalendar" type="button" aria-pressed="true" aria-controls="calendarPanel">Calendar</button>
+      <button id="showTasks" type="button" aria-pressed="false" aria-controls="tasksPanel">Tasks</button>
+    </nav>
+
+    <section id="calendarPanel" class="gridWrap">
+      <div id="monthGrid" class="monthGrid"></div>
+      <div id="calendarHeightSplitter" class="calendarHeightSplitter" role="separator" aria-orientation="horizontal" aria-label="Resize calendar height"></div>
+    </section>
+
+    <div id="layoutSplitter" class="layoutSplitter" role="separator" aria-orientation="vertical" aria-label="Resize panels"></div>
+
+    <section id="tasksPanel" class="dayPanel" aria-labelledby="dayTitle">
+      <div class="viewControls" id="viewControls">
+        <label>
+          <span>Mode</span>
+          <select id="viewModeSelect">
+            <option value="list">Task List</option>
+            <option value="timeline">Timeline</option>
+          </select>
+        </label>
+        <label>
+          <span>Range</span>
+          <select id="rangePresetSelect">
+            <option value="1">Today</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label id="customRangeWrap" class="isHidden">
+          <span>Days</span>
+          <input id="customRangeDays" type="number" min="1" max="365" value="7" />
+        </label>
+        <label id="timelineLayoutWrap" class="isHidden">
+          <span>Timeline</span>
+          <select id="timelineLayoutSelect">
+            <option value="shared">Shared</option>
+            <option value="per_task">Per Task</option>
+          </select>
+        </label>
+        <label id="timelineHourStartWrap" class="isHidden">
+          <span>Hour Start</span>
+          <input id="timelineHourStartInput" type="number" min="0" max="23" value="0" />
+        </label>
+      </div>
+
+      <h2 id="dayTitle">Tasks</h2>
+
+      <form id="taskForm">
+        <input id="taskTitle" type="text" placeholder="Task title" aria-label="Task title" maxlength="120" />
+        <button type="submit">Add</button>
+      </form>
+
+      <ul id="taskList"></ul>
+      <div id="timelineView" class="timelineView isHidden"></div>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

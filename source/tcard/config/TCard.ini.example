@@ -1,0 +1,16 @@
+[TCard]
+RefreshSeconds=1
+; Used only when creating notes; existing notes retain their own fonts.
+; Read on each creation. Size accepts 8-48 points, including decimals.
+; Missing/invalid values use Yu Gothic UI and 10 points.
+DefaultFontFamily=Yu Gothic UI
+DefaultFontSize=10
+; Title size relative to each card's body size; 1.6 preserves the current default.
+; Accepted range: 0.5-3.0.
+TitleFontScale=1.6
+; 1 uses the current semibold title; 0 uses normal weight.
+TitleBold=1
+; Language is inherited from ../tclock-win11.ini when unset.
+; Global settings changes Japanese/English immediately and saves Language=ja/en.
+; Manual INI edits require restarting TCard.
+TClockIni=..\tclock-win11.ini

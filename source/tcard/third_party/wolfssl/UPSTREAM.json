@@ -1,0 +1,8 @@
+{
+  "project": "wolfSSL",
+  "release_api": "https://api.github.com/repos/wolfSSL/wolfssl/releases/latest",
+  "selection": "Latest official stable release at build time",
+  "license": "GPL-3.0",
+  "upstream": "https://github.com/wolfSSL/wolfssl",
+  "verification": "Official HTTPS download; release identity and cache SHA-256 recorded locally under out/deps."
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectName>tcard-sync</ProjectName><ProjectGuid>{7C6B034E-9027-444F-B829-A45E540E7E89}</ProjectGuid><Keyword>Win32Proj</Keyword></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet><WholeProgramOptimization>false</WholeProgramOptimization></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(ProjectDir)..\build\TCard.Common.props" />
+  <PropertyGroup><OutDir>$(TCardBuildRoot)plugins\</OutDir><IntDir>$(TCardObjRoot)tcard-sync\</IntDir><TargetName>TCardSync</TargetName></PropertyGroup>
+  <ItemDefinitionGroup><ClCompile><AdditionalOptions>/utf-8 /MP %(AdditionalOptions)</AdditionalOptions><Optimization>Full</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><PreprocessorDefinitions>WIN32;NDEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><ConformanceMode>true</ConformanceMode><WarningLevel>Level4</WarningLevel><LanguageStandard>stdcpp20</LanguageStandard><RuntimeLibrary>MultiThreaded</RuntimeLibrary></ClCompile><Link><SubSystem>Console</SubSystem><AdditionalLibraryDirectories>$(TCardBuildRoot);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories><AdditionalDependencies>tcard-sync-native.lib;tcard-native.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="tcard_sync_main.cpp" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

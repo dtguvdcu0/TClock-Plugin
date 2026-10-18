@@ -1,0 +1,22 @@
+LIBRARY tcwui-card
+EXPORTS
+    TCardWuiCreateCard
+    TCardWuiDestroyCard
+    TCardWuiSetCardState
+    TCardWuiSetCardTextState
+    TCardWuiSetCardAssetRoot
+    TCardWuiGetCardState
+    TCardWuiGetCardTextState
+    TCardWuiShowCard
+    TCardWuiGetCardWindow
+    TCardWuiSetCardCommandCallback
+    TCardWuiSetCardSaveCallback
+    TCardWuiExecuteCommand
+    TCardWuiIsTopmost
+    TCardWuiIsCardEditing
+    TCardWuiCreateHost
+    TCardWuiDestroyHost
+    TCardWuiSetState
+    TCardWuiShow
+    TCardWuiGetWindow
+    TCardWuiSetCommandCallback

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectName>tcard-signal</ProjectName><ProjectGuid>{C83D81CB-EA41-42C7-823A-4E24C77AC7FB}</ProjectGuid><Keyword>Win32Proj</Keyword></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(ProjectDir)..\build\TCard.Common.props" />
+  <PropertyGroup><OutDir>$(TCardBuildRoot)plugins\</OutDir><IntDir>$(TCardObjRoot)tcard-signal\</IntDir><TargetName>TCardSignal</TargetName></PropertyGroup>
+  <!-- Public signaling verifies signatures with wolfSSL only; no note/storage/mnemonic/native libraries. -->
+  <ItemDefinitionGroup><ClCompile><AdditionalOptions>/utf-8 /MP %(AdditionalOptions)</AdditionalOptions><Optimization>Full</Optimization><PreprocessorDefinitions>WIN32;NDEBUG;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><ConformanceMode>true</ConformanceMode><WarningLevel>Level4</WarningLevel><LanguageStandard>stdcpp20</LanguageStandard><RuntimeLibrary>MultiThreaded</RuntimeLibrary></ClCompile><Link><SubSystem>Console</SubSystem><AdditionalDependencies>userenv.lib;advapi32.lib;crypt32.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="tcard_signal_main.cpp" /><ClInclude Include="signal_protocol.h" /><ClInclude Include="signal_identity.h" /><ClInclude Include="signal_transport.h" /><ClInclude Include="signal_node.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

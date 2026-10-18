@@ -1,0 +1,7 @@
+TCard sync recovery-word list
+Source: https://github.com/trezor/python-mnemonic
+Pinned commit: b57a5ad77a981e743f4167ab2f7927a55c1e82a8
+English word-list SHA-256 (upstream bytes): 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda
+License: MIT (see LICENSE).
+Only the BIP39 English word list and entropy/checksum encoding are used.
+TCard does not use wallet PBKDF2 seed derivation.

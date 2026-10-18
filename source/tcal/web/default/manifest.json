@@ -1,0 +1,13 @@
+{
+  "name": "TCalendar Default Template",
+  "version": "1.0.0",
+  "requiredApiVersion": "1.0",
+  "entry": "index.html",
+  "features": {
+    "monthView": true,
+    "dayList": true,
+    "weekView": false,
+    "dayView": false
+  }
+}
+

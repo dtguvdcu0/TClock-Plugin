@@ -1,0 +1,9 @@
+MD4C - https://github.com/mity/md4c
+Pinned revision: bed011fea706e1cfdf8f9c8a2dc3db263b675b2f
+Retrieved: 2026-09-08
+Files: src/md4c.c, src/md4c.h, src/entity.c, src/entity.h, LICENSE.md.
+Local deltas: repository-required CRLF normalization; removed one trailing
+space in an md4c.h comment; renamed the internal
+md_is_link_destination_A helper to md_is_link_destination_angle (two sites)
+to avoid a false positive in the Windows ANSI API guard. No parser logic change.
+Built in UTF-16 mode. See LICENSE.md for the MIT license.

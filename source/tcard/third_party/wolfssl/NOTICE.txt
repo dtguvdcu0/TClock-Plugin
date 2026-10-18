@@ -1,0 +1,11 @@
+wolfSSL
+Copyright wolfSSL Inc. and contributors.
+Distributed under GPL version 3; see upstream COPYING.
+The official build downloads the latest stable upstream release selected by
+UPSTREAM.json. The source archive is not included in this repository.
+Downloaded source, build cache and release/hash records stay under
+source/tcard/out/deps/ and are not distributed as repository source.
+The dependency build supplies COPYING for the artifact license step.
+Build settings: source/tcard/build/sync-dependencies.ps1.
+Upstream releases: https://github.com/wolfSSL/wolfssl/releases/latest
+TLS 1.3 PSK documentation: https://www.wolfssl.com/documentation/manuals/wolfssl/group__Setup.html
