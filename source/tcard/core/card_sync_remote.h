@@ -383,7 +383,7 @@ inline bool Export(const std::wstring& storage,const std::wstring& receiver,cons
         packet=root.Stringify();if(tcard_asset::encode(packet).size()>tcard_asset::max_file-65536)throw std::runtime_error("Remote boundary exceeds packet budget");return true;
     }catch(const std::exception& e){result.error.assign(e.what(),e.what()+strlen(e.what()));packet.clear();return false;}catch(...){result.error=L"Remote boundary export failed";packet.clear();return false;}
 }
-inline bool ExportDependency(const std::wstring& storage,const std::wstring& receiver,const selection::Inventory& peer,const std::wstring& space,std::wstring& packet,Result& result,unsigned& version,const std::wstring& receipt=L"")
+inline bool ExportDependency(const std::wstring& storage,const std::wstring& receiver,const selection::Inventory& peer,const std::wstring& space,std::wstring& packet,Result& result,unsigned& version,const std::wstring& receipt=L"",unsigned dependencyVersion=1)
 {
     std::lock_guard admission(receiveMutex);std::lock_guard guard(tcard_bootstrap::pinMutex);
     // Keep ordinary/no-op/old object selection unchanged; only the indivisible object-count refusal selects this capability.
@@ -394,7 +394,7 @@ inline bool ExportDependency(const std::wstring& storage,const std::wstring& rec
         const auto folder=tcard_bootstrap::Folder(storage),leaf=receiver+L".json";const auto target=tcard_blobs::Canonical(sync_exists(folder,leaf)?tcard_bootstrap::Read(storage,storage,receiver):admitted);
         if(selection::Missing(selection::Read(target),selection::Read(admitted)))throw std::runtime_error("Dependency pin exceeds Safe frontier");
         auto known=peer;if(sync_exists(folder,leaf))selection::Include(known,ReadCustody(storage,receiver,target,receipt));
-        const tcard_dependencies::Context context{space,tcard_chunks::Group(storage),tcard_bootstrap::Node(storage),receiver,target};std::wstring manifest;unsigned selectedVersion=0;
+        const tcard_dependencies::Context context{space,tcard_chunks::Group(storage),tcard_bootstrap::Node(storage),receiver,target,dependencyVersion};std::wstring manifest;unsigned selectedVersion=0;
         if(!ExportDependencies(storage,known,context,manifest,result,selectedVersion))return false;version=(std::max)(maximum,selectedVersion);
         const auto parsed=tcard_dependencies::Read(manifest,context);auto covered=known;selection::Include(covered,tcard_dependencies::Required(parsed));
         JsonObject root,boundary;root.Insert(L"Inventory",JsonObject::Parse(admitted));root.Insert(L"Delta",JsonObject::Parse(manifest));

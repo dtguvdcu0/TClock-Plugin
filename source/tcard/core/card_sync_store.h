@@ -40,12 +40,12 @@ inline std::wstring sync_owner(const std::wstring& directory)
 struct SyncLock {
     HANDLE handle=nullptr;
     bool acquired=false;
-    explicit SyncLock(const std::wstring& directory) {
+    explicit SyncLock(const std::wstring& directory,DWORD timeout=5000) {
         const auto path=sync_owner(directory);if(path.empty())return;
         // Public roots, generation paths and extended aliases serialize with one native owner.
         const auto name=L"Local\\TCard.Store."+sync_hash(path);
         handle=CreateMutexW(nullptr,FALSE,name.c_str());
-        if(handle){const auto wait=WaitForSingleObject(handle,5000);acquired=wait==WAIT_OBJECT_0||wait==WAIT_ABANDONED;}
+        if(handle){const auto wait=WaitForSingleObject(handle,timeout);acquired=wait==WAIT_OBJECT_0||wait==WAIT_ABANDONED;}
     }
     ~SyncLock(){if(acquired)ReleaseMutex(handle);if(handle)CloseHandle(handle);}
     explicit operator bool() const{return acquired;}

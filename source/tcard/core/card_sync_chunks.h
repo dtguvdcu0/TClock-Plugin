@@ -42,7 +42,7 @@ inline Manifest Describe(const Bytes& bytes)
     if(bytes.size()<=chunkSize||bytes.size()>tcard_asset::max_file)throw std::runtime_error("Chunk payload budget exceeded");
     Manifest result;result.size=bytes.size();result.hash=tcard_asset::hash(bytes);
     for(size_t at=0;at<bytes.size();at+=chunkSize){const auto end=(std::min)(bytes.size(),at+chunkSize);
-        result.hashes.push_back(tcard_asset::hash(Bytes(bytes.begin()+at,bytes.begin()+end)));}return result;
+        result.hashes.push_back(tcard_asset::hash_range(std::span<const BYTE>(bytes).subspan(at,end-at)));}return result;
 }
 inline std::wstring Group(const std::wstring& storage)
 {
@@ -52,9 +52,9 @@ inline std::wstring Group(const std::wstring& storage)
 }
 // Shared provisional transfer reservations exclude committed native notes/history/assets.
 namespace budget {
-constexpr size_t maxBytes=128*1024*1024,metadataBytes=2*1024*1024+65536;
+constexpr size_t maxBytes=128*1024*1024,maxSealedBytes=512*1024*1024,metadataBytes=2*1024*1024+65536;
 constexpr unsigned retireObject=1,retireBinding=2;
-struct Entry {std::wstring path,identity,destination;size_t bytes=0;bool provisional=true,retiring=false;unsigned retireKind=0;size_t partCount=0;};
+struct Entry {std::wstring path,identity,destination;size_t bytes=0;bool provisional=true,retiring=false;unsigned retireKind=0;size_t partCount=0;std::wstring group;};
 struct Catalog {std::wstring owner,group;std::vector<Entry> entries;};
 struct RestoreMemo {bool profile=false,checked=false;};
 inline std::map<std::wstring,RestoreMemo> restored;
@@ -92,7 +92,7 @@ inline std::wstring Encode(const Catalog& value)
     JsonObject root;JsonArray entries;root.Insert(L"Version",JsonValue::CreateNumberValue(1));root.Insert(L"Group",JsonValue::CreateStringValue(value.group));
     for(const auto& entry:value.entries){JsonObject item;item.Insert(L"Path",JsonValue::CreateStringValue(entry.path));item.Insert(L"Identity",JsonValue::CreateStringValue(entry.identity));
         item.Insert(L"Destination",JsonValue::CreateStringValue(entry.destination));item.Insert(L"Bytes",JsonValue::CreateNumberValue(static_cast<double>(entry.bytes)));item.Insert(L"Provisional",JsonValue::CreateBooleanValue(entry.provisional));
-        item.Insert(L"Retiring",JsonValue::CreateBooleanValue(entry.retiring));item.Insert(L"RetireKind",JsonValue::CreateNumberValue(entry.retireKind));item.Insert(L"PartCount",JsonValue::CreateNumberValue(static_cast<double>(entry.partCount)));entries.Append(item);}
+        item.Insert(L"Retiring",JsonValue::CreateBooleanValue(entry.retiring));item.Insert(L"RetireKind",JsonValue::CreateNumberValue(entry.retireKind));item.Insert(L"PartCount",JsonValue::CreateNumberValue(static_cast<double>(entry.partCount)));if(!entry.group.empty())item.Insert(L"Group",JsonValue::CreateStringValue(entry.group));entries.Append(item);}
     root.Insert(L"Entries",entries);const auto text=std::wstring(root.Stringify());if(tcard_asset::encode(text).size()>1024*1024)throw std::runtime_error("Transfer reservation metadata exceeded");return text;
 }
 // Match the existing bridge::Storage active-group schema, rather than inventing a new GUID contract.
@@ -116,23 +116,34 @@ inline RestoreMemo& Memo(const Catalog& value)
     // Observe changes even when a later catalog check refuses admission; no old state may silently reappear.
     if(!inserted&&entry->second.profile!=profile)entry->second={profile,false};return entry->second;
 }
-inline bool Managed(const std::wstring& path,bool profile=false)
+inline std::wstring Scope(const std::wstring& path,bool profile=false)
 {
     auto relative=path;bool replica=false;
     if(relative.starts_with(L"groups\\")){
-        if(!profile)return false;const auto end=relative.find(L'\\',7);
-        if(end==std::wstring::npos||!GroupName(relative.substr(7,end-7)))return false;relative.erase(0,end+1);
+        if(!profile)return {};const auto end=relative.find(L'\\',7);
+        if(end==std::wstring::npos||!GroupName(relative.substr(7,end-7)))return {};relative.erase(0,end+1);
     }else if(relative.starts_with(L"replica\\")){replica=true;relative.erase(0,8);}
     if(relative.starts_with(L"ui\\")){
-        if(replica)return false;relative.erase(0,3);const auto end=relative.find(L'\\');
-        if(end==std::wstring::npos)return false;const auto direction=relative.substr(0,end);
-        if(direction!=L"incoming-objects"&&direction!=L"outgoing-objects")return false;relative.erase(0,end+1);
+        if(replica)return {};relative.erase(0,3);const auto end=relative.find(L'\\');
+        if(end==std::wstring::npos)return {};const auto direction=relative.substr(0,end);
+        if(direction!=L"incoming-objects"&&direction!=L"outgoing-objects")return {};relative.erase(0,end+1);
     }
     if(relative.starts_with(L"_native-generations\\")){
         const auto end=relative.find(L'\\',20);
-        if(end==std::wstring::npos||!sync_hex(relative.substr(20,end-20))||relative.substr(end,6)!=L"\\data\\")return false;relative.erase(0,end+6);
+        if(end==std::wstring::npos||!sync_hex(relative.substr(20,end-20))||relative.substr(end,6)!=L"\\data\\")return {};relative.erase(0,end+6);
     }
+    return relative;
+}
+inline bool Managed(const std::wstring& path,bool profile=false)
+{
+    const auto relative=Scope(path,profile);
     return relative.starts_with(L"_transfer\\")||relative.starts_with(L"_objects\\")||relative.starts_with(L"_object-transfers\\")||relative.starts_with(L"_dependency-custody\\");
+}
+inline bool Sealed(const std::wstring& path,bool profile=false)
+{
+    const auto relative=Scope(path,profile);const std::wstring prefix=L"_dependency-custody\\";
+    if(!relative.starts_with(prefix))return false;const auto tail=relative.substr(prefix.size());
+    return tail.size()==137&&sync_hex(tail.substr(0,64))&&tail.substr(64,9)==L"\\_sealed\\"&&sync_hex(tail.substr(73));
 }
 inline std::vector<std::wstring> Children(const std::wstring& path)
 {
@@ -182,13 +193,22 @@ inline std::wstring RetirementRoot(const std::wstring& path,unsigned kind,size_t
 }
 inline void Check(const Catalog& value)
 {
-    size_t bytes=metadataBytes,slots=0;std::set<std::wstring> paths;const bool profile=Memo(value).profile;
+    size_t bytes=metadataBytes,sealedBytes=0,slots=0;std::set<std::wstring> paths;const bool profile=Memo(value).profile;
     if(value.entries.size()>2048)throw std::runtime_error("Transfer reservation catalog exceeded");
-    for(const auto& entry:value.entries){if(!sync_hex(entry.identity)||!Managed(entry.path,profile)||entry.path.find(L"..")!=std::wstring::npos||!paths.insert(entry.path).second||entry.bytes>maxBytes-bytes)throw std::runtime_error("Transfer quota identity or bytes exceeded");
+    for(const auto& entry:value.entries){if((!entry.group.empty()&&!sync_hex(entry.group))||!sync_hex(entry.identity)||!Managed(entry.path,profile)||entry.path.find(L"..")!=std::wstring::npos||!paths.insert(entry.path).second)throw std::runtime_error("Transfer quota identity or bytes exceeded");
+        const bool sealed=Sealed(entry.path,profile);
+        if(sealed&&(entry.provisional||!entry.destination.empty()))throw std::runtime_error("Sealed custody state differs");
+        // Verified encrypted custody is bounded separately; it never grants committed inventory or another provisional slot.
+        auto& charged=sealed?sealedBytes:bytes;const auto limit=sealed?maxSealedBytes:maxBytes;
+        if(entry.bytes>limit-charged)throw std::runtime_error("Transfer quota identity or bytes exceeded");charged+=entry.bytes;
         if(entry.retiring){RetirementRoot(entry.path,entry.retireKind,entry.partCount);if(!entry.destination.empty())throw std::runtime_error("Retiring transfer promotion unresolved");}
         else if(entry.retireKind||entry.partCount)throw std::runtime_error("Inactive transfer retirement differs");
-        bytes+=entry.bytes;if(entry.provisional&&++slots>maxTransfers)throw std::runtime_error("Combined provisional transfer slots reached");
-        if(!entry.destination.empty()&&(!Managed(entry.destination,profile)||entry.path.find(L"\\_objects\\")==std::wstring::npos||entry.destination.find(L"..")!=std::wstring::npos||!entry.destination.starts_with(entry.path.substr(0,entry.path.find(L"\\_objects\\"))+L"\\_sealed\\")))throw std::runtime_error("Transfer promotion path differs");}
+        if(entry.provisional&&++slots>maxTransfers)throw std::runtime_error("Combined provisional transfer slots reached");
+        if(!entry.destination.empty()&&(!Managed(entry.destination,profile)||entry.path.find(L"\\_objects\\")==std::wstring::npos||entry.destination.find(L"..")!=std::wstring::npos||!entry.destination.starts_with(entry.path.substr(0,entry.path.find(L"\\_objects\\"))+L"\\_sealed\\")))throw std::runtime_error("Transfer promotion path differs");
+        // Reserve the destination budget before the durable move; interrupted promotion retains both charges.
+        if(!entry.destination.empty()){
+            if(!Sealed(entry.destination,profile)||entry.bytes>maxSealedBytes-sealedBytes)throw std::runtime_error("Sealed transfer quota exceeded");sealedBytes+=entry.bytes;
+        }}
 }
 inline void Save(const Catalog& value)
 {
@@ -200,7 +220,7 @@ inline Catalog Load(const std::wstring& storage)
     if(sync_exists(Folder(value),L"budget.json")){
         if(!tcard_bridge::Read(Folder(value),L"budget.json",text))throw std::runtime_error("Transfer reservation unavailable");const auto root=JsonObject::Parse(text);
         if(root.GetNamedNumber(L"Version")!=1||sync_string(root,L"Group")!=value.group)throw std::runtime_error("Transfer reservation group differs");const auto entries=root.GetNamedArray(L"Entries");
-        if(entries.Size()>2048)throw std::runtime_error("Transfer reservation catalog exceeded");for(const auto& item:entries){const auto row=item.GetObject();value.entries.push_back({sync_string(row,L"Path"),sync_string(row,L"Identity"),sync_string(row,L"Destination"),Number(row,L"Bytes",maxBytes),row.GetNamedBoolean(L"Provisional"),row.GetNamedBoolean(L"Retiring",false),static_cast<unsigned>(row.HasKey(L"RetireKind")?Number(row,L"RetireKind",retireBinding):0),row.HasKey(L"PartCount")?Number(row,L"PartCount",64):0});}
+        if(entries.Size()>2048)throw std::runtime_error("Transfer reservation catalog exceeded");for(const auto& item:entries){const auto row=item.GetObject();value.entries.push_back({sync_string(row,L"Path"),sync_string(row,L"Identity"),sync_string(row,L"Destination"),Number(row,L"Bytes",maxBytes),row.GetNamedBoolean(L"Provisional"),row.GetNamedBoolean(L"Retiring",false),static_cast<unsigned>(row.HasKey(L"RetireKind")?Number(row,L"RetireKind",retireBinding):0),row.HasKey(L"PartCount")?Number(row,L"PartCount",64):0,std::wstring(row.GetNamedString(L"Group",L""))});}
     }
     Check(value);return value;
 }
@@ -245,7 +265,8 @@ inline void Restore(Catalog& value,const std::wstring&)
         }else if(name.ends_with(L".part")){
             const auto directory=path.substr(0,path.find_last_of(L"\\"));std::wstring metadata;
             if(!tcard_bridge::Read(directory,L"manifest.json",metadata))throw std::runtime_error("Transfer fragment manifest unavailable");const auto manifest=JsonObject::Parse(metadata);
-            if(sync_string(manifest,L"Group")!=value.group)throw std::runtime_error("Transfer fragment group differs");const auto hashes=manifest.GetNamedArray(L"Hashes");
+            // Registered historical custody retains its transfer authority across a vault-key activation.
+            if(sync_string(manifest,L"Group")!=(owner->group.empty()?value.group:owner->group))throw std::runtime_error("Transfer fragment group differs");const auto hashes=manifest.GetNamedArray(L"Hashes");
             const auto indexText=name.substr(0,name.size()-5);if(indexText.empty()||indexText.size()>2||indexText.find_first_not_of(L"0123456789")!=std::wstring::npos)throw std::runtime_error("Unknown transfer fragment retained");
             const auto index=static_cast<unsigned>(std::stoul(indexText));if(name!=std::to_wstring(index)+L".part"||index>=hashes.Size())throw std::runtime_error("Unknown transfer fragment retained");
             if(tcard_bridge::Hash(metadata)!=owner->identity)throw std::runtime_error("Transfer fragment descriptor binding differs");

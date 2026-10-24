@@ -2,6 +2,7 @@
 #include "card_sync_bridge.h"
 #include "card_sync_selection.h"
 #include "card_sync_bootstrap.h"
+#include "card_sync_dependencies.h"
 
 // Owner application receipts describe durable native materialization, never worker custody.
 // Publish/PublishInventory accept verified committed snapshots/headers captured by the TCard owner.
@@ -28,33 +29,37 @@ inline tcard_sync::selection::Inventory Validate(const std::wstring& receipt,con
     if(sync_string(root,L"Digest")!=tcard_bridge::Hash(header))throw std::runtime_error("Application receipt digest differs");
     return selection::Read(header);
 }
-inline bool Read(const std::wstring& mailbox,const std::wstring& owner,tcard_sync::selection::Inventory& inventory,bool* batches=nullptr,bool* objects=nullptr,bool* atomic=nullptr,bool* dependencies=nullptr,std::wstring* node=nullptr)
+inline bool Read(const std::wstring& mailbox,const std::wstring& owner,tcard_sync::selection::Inventory& inventory,bool* batches=nullptr,bool* objects=nullptr,bool* atomic=nullptr,bool* dependencies=nullptr,std::wstring* node=nullptr,unsigned* dependencyVersion=nullptr)
 {
-    inventory={};if(batches)*batches=false;if(objects)*objects=false;if(atomic)*atomic=false;if(dependencies)*dependencies=false;if(node)node->clear();
+    inventory={};if(dependencyVersion)*dependencyVersion=1;if(batches)*batches=false;if(objects)*objects=false;if(atomic)*atomic=false;if(dependencies)*dependencies=false;if(node)node->clear();
     try{
         tcard_crypto::Keys keys;std::wstring receipt;
         if(!tcard_storage::LoadKey(mailbox,keys)||!tcard_bridge::Read(mailbox,L"applied.json",receipt))return false;
         inventory=Validate(receipt,Identity(keys),owner);const auto record=tcard_sync::JsonObject::Parse(receipt);
         const bool dependency=record.GetNamedBoolean(L"Dependencies",false);const auto native=std::wstring(record.GetNamedString(L"DependencyNode",L""));
         if(dependency&&!tcard_sync::sync_hex(native))throw std::runtime_error("Dependency owner node unavailable");
-        if(dependencies)*dependencies=dependency;if(node&&dependency)*node=native;if(batches)*batches=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"Batches",false);if(objects)*objects=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"Objects",false);if(atomic)*atomic=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"NativeAtomic",false);return true;
+        const auto version=dependency?tcard_dependencies::Capability(record,L"DependencySets"):1;
+        if(dependencyVersion)*dependencyVersion=version;if(dependencies)*dependencies=dependency;if(node&&dependency)*node=native;if(batches)*batches=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"Batches",false);if(objects)*objects=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"Objects",false);if(atomic)*atomic=tcard_sync::JsonObject::Parse(receipt).GetNamedBoolean(L"NativeAtomic",false);return true;
     }catch(...){inventory={};return false;}
 }
-inline bool PublishInventory(const std::wstring& mailbox,const std::wstring& storage,const std::wstring& header,bool batches=false,bool objects=false,bool atomic=false,bool dependencies=false)
+inline bool PublishInventory(const std::wstring& mailbox,const std::wstring& storage,const std::wstring& header,bool batches=false,bool objects=false,bool atomic=false,bool dependencies=false,unsigned dependencyVersion=1)
 {
     // Unencrypted legacy/headless callers get no receipt, rather than plaintext ACK metadata.
     if(!tcard_storage::Required(mailbox))return true;
     try{
         tcard_crypto::Keys keys,native;
         if(!tcard_storage::LoadKey(mailbox,keys)||!tcard_storage::LoadKey(storage,native)||keys.publicKey!=native.publicKey)return false;
+        if(dependencyVersion!=1&&dependencyVersion!=tcard_dependencies::currentVersion)return false;
+        if(!dependencies)dependencyVersion=1;
         const auto identity=Identity(keys),owner=Owner(GetCurrentProcess(),GetCurrentProcessId());
         const auto expected=tcard_sync::selection::Read(header);const auto node=dependencies?tcard_bootstrap::Node(storage):L"";std::wstring retained;
         if(tcard_bridge::Read(mailbox,L"applied.json",retained)){
-            try{if(Validate(retained,identity,owner)==expected&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Batches",false)==batches&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Objects",false)==objects&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"NativeAtomic",false)==atomic&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Dependencies",false)==dependencies&&std::wstring(tcard_sync::JsonObject::Parse(retained).GetNamedString(L"DependencyNode",L""))==node)return true;}catch(...){}
+            try{if(Validate(retained,identity,owner)==expected&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Batches",false)==batches&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Objects",false)==objects&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"NativeAtomic",false)==atomic&&tcard_sync::JsonObject::Parse(retained).GetNamedBoolean(L"Dependencies",false)==dependencies&&tcard_dependencies::Capability(tcard_sync::JsonObject::Parse(retained),L"DependencySets")==dependencyVersion&&std::wstring(tcard_sync::JsonObject::Parse(retained).GetNamedString(L"DependencyNode",L""))==node)return true;}catch(...){}
         }
         using namespace tcard_sync;
         JsonObject root;root.Insert(L"Version",JsonValue::CreateNumberValue(1));
         root.Insert(L"Batches",JsonValue::CreateBooleanValue(batches));root.Insert(L"Objects",JsonValue::CreateBooleanValue(objects));
+        root.Insert(L"DependencySets",JsonValue::CreateNumberValue(dependencyVersion));
         root.Insert(L"Dependencies",JsonValue::CreateBooleanValue(dependencies));root.Insert(L"DependencyNode",JsonValue::CreateStringValue(node));
         root.Insert(L"NativeAtomic",JsonValue::CreateBooleanValue(atomic));root.Insert(L"Kind",JsonValue::CreateStringValue(L"owner-applied"));root.Insert(L"Group",JsonValue::CreateStringValue(identity));
         root.Insert(L"Owner",JsonValue::CreateStringValue(owner));
@@ -62,8 +67,8 @@ inline bool PublishInventory(const std::wstring& mailbox,const std::wstring& sto
         return tcard_bridge::Publish(mailbox,L"applied.json",std::wstring(root.Stringify()));
     }catch(...){return false;}
 }
-inline bool Publish(const std::wstring& mailbox,const std::wstring& storage,const std::wstring& snapshot,bool batches=false,bool objects=false,bool atomic=false,bool dependencies=false)
+inline bool Publish(const std::wstring& mailbox,const std::wstring& storage,const std::wstring& snapshot,bool batches=false,bool objects=false,bool atomic=false,bool dependencies=false,unsigned dependencyVersion=1)
 {
-    try{return PublishInventory(mailbox,storage,tcard_sync::selection::Header(snapshot),batches,objects,atomic,dependencies);}catch(...){return false;}
+    try{return PublishInventory(mailbox,storage,tcard_sync::selection::Header(snapshot),batches,objects,atomic,dependencies,dependencyVersion);}catch(...){return false;}
 }
 }

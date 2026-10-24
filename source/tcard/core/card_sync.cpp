@@ -85,10 +85,11 @@ static bool sync_check_image(const std::wstring& root,const std::wstring& name,s
     }
     if(tcard_asset::hash(bytes)!=name.substr(7,64))throw std::runtime_error("Invalid retained image hash");return true;
 }
-static std::wstring sync_capture(const std::wstring& directory,bool readonly,unsigned* maximumVersion,Result& result)
+static std::wstring sync_capture(const std::wstring& directory,bool readonly,unsigned* maximumVersion,Result& result,std::stop_token stop={})
 {
     JsonObject envelope;envelope.Insert(L"Version",JsonValue::CreateNumberValue(1));JsonArray notes;
     for(const auto& [id,manifest]:sync_manifests(directory,readonly)){
+        if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
         JsonObject note;note.Insert(L"Id",JsonValue::CreateStringValue(id));JsonArray operations;
         const auto changes=sync_load(directory,id,sync_ids(manifest));std::set<std::wstring> names;
         for(const auto& change:changes){
@@ -102,6 +103,7 @@ static std::wstring sync_capture(const std::wstring& directory,bool readonly,uns
         JsonArray assets;const auto archive=sync_archive(directory,id);
         const auto visible=sync_deleted(directory,sync_stem(id))?std::set<std::wstring>{}:sync_images(sync_read_state(manifest,archive));
         for(const auto& name:names){
+            if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
             std::vector<BYTE> bytes;bool ready=sync_check_image(archive,name,bytes);
             if(visible.contains(name)){std::vector<BYTE> native;ready=sync_check_image(directory+L"\\"+sync_stem(id),name,native)&&ready;}
             if(!ready){if(maximumVersion)continue;throw std::runtime_error("Missing archived image");}
@@ -115,17 +117,20 @@ static std::wstring sync_capture(const std::wstring& directory,bool readonly,uns
     envelope.Insert(L"Notes",notes);auto package=std::wstring(envelope.Stringify());
     if(tcard_asset::encode(package).size()>tcard_asset::max_file)throw std::runtime_error("Exchange package budget exceeded");return package;
 }
-static bool sync_export(const std::wstring& storagePath,std::wstring& package,Result& result,bool readonly,unsigned* maximumVersion=nullptr)
+static bool sync_export(const std::wstring& storagePath,std::wstring& package,Result& result,bool readonly,unsigned* maximumVersion=nullptr,std::stop_token stop={})
 {
-    result={};package.clear();if(maximumVersion)*maximumVersion=0;std::lock_guard guard(sync_mutex);
+    result={};package.clear();if(maximumVersion)*maximumVersion=0;std::unique_lock guard(sync_mutex,std::defer_lock);
+    if(!stop.stop_possible())guard.lock();
+    else while(!guard.try_lock()){if(stop.stop_requested()){result.error=L"Committed export interrupted";return false;}Sleep(10);}
     try{
+        if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
         SyncLock lock(tcard_native::Base(storagePath));if(!lock)throw std::runtime_error("Storage busy");
         const auto directory=sync_directory(storagePath);
         std::vector<tcard::CardRecord> cards;
         if(readonly){if(!tcard::LoadCardSnapshot(storagePath,cards,false))throw std::runtime_error("Cannot read committed snapshot");}
         else tcard::LoadCards(storagePath,cards);
         sync_seed(storagePath,directory,cards,readonly);
-        package=sync_capture(directory,readonly,maximumVersion,result);return true;
+        package=sync_capture(directory,readonly,maximumVersion,result,stop);return true;
     }catch(const std::exception& e){result.error.assign(e.what(),e.what()+strlen(e.what()));package.clear();if(maximumVersion)*maximumVersion=0;return false;}
     catch(...){result.error=L"Export failed";package.clear();if(maximumVersion)*maximumVersion=0;return false;}
 }
@@ -192,8 +197,8 @@ bool ExportSelection(const std::wstring& storagePath,const selection::Inventory&
 }
 bool ExportChanges(const std::wstring& path,std::wstring& package,Result& result){return sync_export(path,package,result,false);}
 bool ExportInventory(const std::wstring& path,std::wstring& header,Result& result,unsigned& maximumVersion){return sync_export(path,header,result,false,&maximumVersion);}
-bool ExportSnapshot(const std::wstring& path,std::wstring& package,Result& result){return sync_export(path,package,result,true);}
-bool ExportCommittedInventory(const std::wstring& path,std::wstring& header,Result& result,unsigned& maximumVersion){return sync_export(path,header,result,true,&maximumVersion);}
+bool ExportSnapshot(const std::wstring& path,std::wstring& package,Result& result,std::stop_token stop){return sync_export(path,package,result,true,nullptr,stop);}
+bool ExportCommittedInventory(const std::wstring& path,std::wstring& header,Result& result,unsigned& maximumVersion,std::stop_token stop){return sync_export(path,header,result,true,&maximumVersion,stop);}
 
 // Metadata capture and per-object reads are separate; this path never constructs an all-image map.
 bool ExportDependencies(const std::wstring& storagePath,const selection::Inventory& peer,const tcard_dependencies::Context& context,std::wstring& package,Result& result,unsigned& maximumVersion)
@@ -229,6 +234,8 @@ bool ExportDependencies(const std::wstring& storagePath,const selection::Invento
                     tcard_crypto::Bytes bytes;if(!tcard_asset::read(archive,name,bytes))throw std::runtime_error("Captured dependency object unavailable");
                     manifest.descriptors.push_back({kind,tcard_objects::Describe(name,bytes)});};
                 for(const auto* side:{L"Before",L"After"})add(1,sync_string(original.GetNamedObject(side),L"SourceFile"));for(const auto& name:images)add(2,name);
+                size_t bytes=0;for(const auto& descriptor:manifest.descriptors)bytes+=descriptor.object.size;
+                if(bytes<=tcard_dependencies::legacyBytes)manifest.context.version=1;
                 package=tcard_dependencies::Encode(manifest);tcard_dependencies::Read(package,context);maximumVersion=static_cast<unsigned>(original.GetNamedNumber(L"Version"));result.applied=1;return true;
             }
         }
@@ -485,10 +492,10 @@ struct sync_dependency_locks {
             auto lock=std::make_unique<SyncLock>(path);if(!*lock)throw std::runtime_error("Dependency owner busy");owners.push_back(std::move(lock));}
     }
 };
-static tcard_dependencies::Manifest sync_dependency_commit(const std::wstring& storage,const PreparedNote& note,const tcard_dependencies::Context& context)
+static tcard_dependencies::Manifest sync_dependency_commit(const std::wstring& storage,const PreparedNote& note,const tcard_dependencies::Context& context,const std::wstring& retainedGroup=L"")
 {
     const auto manifest=tcard_dependencies::Read(note.package,context);if(note.id!=manifest.note)throw std::runtime_error("Prepared dependency identity differs");
-    const auto directory=tcard_native::Extended(sync_directory(storage));if(tcard_chunks::Group(directory)!=context.group)throw std::runtime_error("Committed dependency key differs");
+    const auto directory=tcard_native::Extended(sync_directory(storage));if(tcard_chunks::Group(directory)!=(retainedGroup.empty()?context.group:retainedGroup))throw std::runtime_error("Committed dependency key differs");
     const auto stem=sync_stem(manifest.note);JsonObject committed;
     if(sync_deleted(directory,stem)){
         if(!sync_read(directory,stem+L".deleted",committed))throw std::runtime_error("Committed dependency deletion unavailable");
@@ -498,20 +505,28 @@ static tcard_dependencies::Manifest sync_dependency_commit(const std::wstring& s
     JsonObject original;if(!sync_read(sync_archive(directory,manifest.note),manifest.operation+L".json",original)||
         tcard_dependencies::Digest(std::wstring(original.Stringify()))!=manifest.originalHash)throw std::runtime_error("Committed dependency original differs");
     // The source archive, never externally supplied Pool/Result/Required, proves every immutable original/source/asset byte.
-    tcard_dependencies::SourceReader reader(directory,note.package,context);sync_verify_dependencies(manifest,reader);return manifest;
+    // Rebind only this private local read proof after catalog authorization, never the retained package or an import context.
+    auto local=manifest;if(!retainedGroup.empty())local.context.group=retainedGroup;
+    tcard_dependencies::SourceReader reader(directory,tcard_dependencies::Encode(local),local.context);sync_verify_dependencies(local,reader);return manifest;
 }
 bool DependencyCommitProof::Matches(const std::wstring& storage,const tcard_dependencies::Manifest& manifest)const noexcept
 {
     if(!valid_||!active_)return false;
     try{return owner_==sync_owner(tcard_native::Base(storage))&&vault_==tcard_chunks::budget::Owner(tcard_native::Base(storage))&&
-        directory_==sync_path_plain(sync_directory(storage))&&group_==manifest.context.group&&tcard_chunks::Group(tcard_native::Extended(directory_))==group_&&
+        directory_==sync_path_plain(sync_directory(storage))&&group_==manifest.context.group&&tcard_chunks::Group(tcard_native::Extended(directory_))==keyGroup_&&
         manifest_==tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));}catch(...){return false;}
+}
+bool DependencyCommitProof::MatchesCustody(const std::wstring& custody,const tcard_dependencies::Manifest& manifest)const noexcept
+{
+    if(!valid_||!active_||custody_.empty())return false;
+    try{return custody_==sync_path_plain(sync_directory(custody))&&tcard_chunks::Group(sync_directory(custody))==keyGroup_&&
+        group_==manifest.context.group&&manifest_==tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));}catch(...){return false;}
 }
 bool VerifyDependencyCommit(const std::wstring& storage,const PreparedNote& note,const tcard_dependencies::Context& context,DependencyCommitProof& proof,Result& result)
 {
     result={};proof.Clear();try{sync_dependency_locks locks(storage);const auto manifest=sync_dependency_commit(storage,note,context);
         proof.owner_=sync_owner(tcard_native::Base(storage));proof.vault_=tcard_chunks::budget::Owner(tcard_native::Base(storage));
-        proof.directory_=sync_path_plain(sync_directory(storage));proof.group_=context.group;proof.manifest_=tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));proof.valid_=true;
+        proof.directory_=sync_path_plain(sync_directory(storage));proof.group_=proof.keyGroup_=context.group;proof.manifest_=tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));proof.valid_=true;
         // active remains false: a stored standalone proof never authorizes later cleanup.
         return true;
     }catch(const std::exception& error){proof.Clear();result.error.assign(error.what(),error.what()+strlen(error.what()));return false;}catch(...){proof.Clear();result.error=L"Committed dependency verification failed";return false;}
@@ -519,10 +534,21 @@ bool VerifyDependencyCommit(const std::wstring& storage,const PreparedNote& note
 bool WithDependencyCommit(const std::wstring& storage,const std::wstring& custodyRoot,const PreparedNote& note,const tcard_dependencies::Context& context,const std::function<bool(const DependencyCommitProof&)>& cleanup,Result& result)
 {
     result={};try{if(custodyRoot.empty()||!cleanup)throw std::runtime_error("Dependency cleanup boundary unavailable");
-        sync_dependency_locks locks(storage,custodyRoot);const auto manifest=sync_dependency_commit(storage,note,context);
-        if(tcard_chunks::Group(custodyRoot)!=context.group)throw std::runtime_error("Dependency custody key differs");
+        sync_dependency_locks locks(storage,custodyRoot);const auto candidate=tcard_dependencies::Read(note.package,context);
+        const auto custody=sync_directory(custodyRoot),currentGroup=tcard_chunks::Group(sync_directory(storage));
+        if(tcard_chunks::Group(custody)!=currentGroup)throw std::runtime_error("Dependency custody key differs");
+        const bool historical=currentGroup!=context.group;
+        if(historical){
+            const auto catalog=tcard_chunks::budget::Load(custody);const auto identity=tcard_dependencies::Digest(tcard_dependencies::Encode(candidate));
+            const auto relative=tcard_chunks::budget::Relative(catalog.owner,custody+L"\\_dependency-custody\\"+identity);
+            const auto entry=std::find_if(catalog.entries.begin(),catalog.entries.end(),[&](const auto& row){return row.path==relative;});
+            // Explicit per-entry authority is created by protected activation; no implicit adoption across keys.
+            if(entry==catalog.entries.end()||entry->group!=context.group||entry->identity!=identity||entry->provisional||!entry->destination.empty())
+                throw std::runtime_error("Historical dependency reservation differs");
+        }
+        const auto manifest=sync_dependency_commit(storage,note,context,historical?currentGroup:L"");
         DependencyCommitProof proof;proof.owner_=sync_owner(tcard_native::Base(storage));proof.vault_=tcard_chunks::budget::Owner(tcard_native::Base(storage));
-        proof.directory_=sync_path_plain(sync_directory(storage));proof.group_=context.group;proof.manifest_=tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));proof.valid_=proof.active_=true;
+        proof.directory_=sync_path_plain(sync_directory(storage));proof.group_=context.group;proof.keyGroup_=currentGroup;proof.custody_=sync_path_plain(custody);proof.manifest_=tcard_dependencies::Digest(tcard_dependencies::Encode(manifest));proof.valid_=proof.active_=true;
         struct End{bool& active;~End(){active=false;}} end{proof.active_};
         if(!cleanup(proof)){result.error=L"Committed duplicate cleanup remains incomplete";return false;}return true;
     }catch(const std::exception& error){result.error.assign(error.what(),error.what()+strlen(error.what()));return false;}catch(...){result.error=L"Committed duplicate cleanup failed";return false;}

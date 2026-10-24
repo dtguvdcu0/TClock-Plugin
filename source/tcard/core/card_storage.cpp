@@ -244,7 +244,7 @@ bool Enable(const std::wstring& path,const tcard_crypto::Keys& keys,std::string&
         const bool active=store_exists(root+L"\\"+requiredName)&&!pending;
         std::vector<std::wstring> files;store_collect(root,root,files);std::sort(files.begin(),files.end());
         using namespace winrt::Windows::Data::Json;
-        JsonObject catalog;size_t total=0;
+        JsonObject catalog;
         if(pending){
             Bytes raw,plain;Wipe wipe{plain};
             if(!store_read_raw(root+L"\\"+pendingName,raw)||!store_open(state,raw,plain)||
@@ -264,7 +264,7 @@ bool Enable(const std::wstring& path,const tcard_crypto::Keys& keys,std::string&
                 else if(!store_open(state,raw,plain)||tcard_asset::hash(plain)!=hash)throw std::runtime_error("Migration source changed");
             }else{plain=raw;catalog.Insert(leaf,JsonValue::CreateStringValue(tcard_asset::hash(plain)));}
             if(plain.size()>tcard_crypto::maxObject)throw std::runtime_error("Oversized native migration source");
-            total+=plain.size();if(total>128*1024*1024)throw std::runtime_error("Native migration exceeds total bound");
+            // The inventory and each file are bounded; migration never accumulates payloads in memory.
         }
         if(active)return true;
         if(!hasKey&&!store_access_key(root,state,true))throw std::runtime_error("Cannot protect native storage key");

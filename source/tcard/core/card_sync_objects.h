@@ -34,7 +34,7 @@ inline Manifest Describe(const std::wstring& name,const Bytes& bytes)
     if(bytes.size()>tcard_asset::max_file)throw std::runtime_error("Object byte budget exceeded");
     Manifest value{name,bytes.size(),tcard_asset::hash(bytes),{}};
     for(size_t at=0;at<bytes.size();at+=tcard_chunks::chunkSize){const auto end=(std::min)(bytes.size(),at+tcard_chunks::chunkSize);
-        value.hashes.push_back(tcard_asset::hash(Bytes(bytes.begin()+at,bytes.begin()+end)));}
+        value.hashes.push_back(tcard_asset::hash_range(std::span<const BYTE>(bytes).subspan(at,end-at)));}
     return Read(Encode(value));
 }
 inline bool Referenced(const std::wstring& package)

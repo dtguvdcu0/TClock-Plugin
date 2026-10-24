@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <functional>
+#include <stop_token>
 
 namespace tcard_dependencies { struct Context; struct Manifest; class Reader; }
 
@@ -73,9 +74,9 @@ namespace selection { struct Inventory; }
 // An optional captured header restricts body membership, never the fresh advertised inventory.
 bool ExportSelection(const std::wstring& storagePath, const selection::Inventory& peer, std::wstring& package, Result& result, unsigned& maximumVersion, bool readonly = false, bool objects = false, const std::wstring& pinnedHeader = L"", size_t reservedBytes = 0);
 // Read-only committed inventory for owner receipts and bounded mailbox progress.
-bool ExportCommittedInventory(const std::wstring& storagePath, std::wstring& header, Result& result, unsigned& maximumVersion);
+bool ExportCommittedInventory(const std::wstring& storagePath, std::wstring& header, Result& result, unsigned& maximumVersion, std::stop_token stop = {});
 // Read-only committed export for a TCard-owned background reader; refuses legacy seeding.
-bool ExportSnapshot(const std::wstring& storagePath, std::wstring& package, Result& result);
+bool ExportSnapshot(const std::wstring& storagePath, std::wstring& package, Result& result, std::stop_token stop = {});
 struct PreparedNote {
     std::wstring id, package;
 };
@@ -101,9 +102,9 @@ bool PrepareDependencyNote(const std::wstring& storagePath, const std::wstring& 
 bool ImportDependencyNote(const std::wstring& storagePath, const PreparedNote& note, const tcard_dependencies::Context& context, tcard_dependencies::Reader& reader, Result& result);
 // Internal committed-copy proof, never an owner ACK. Tokens are noncopyable and live only in the guarded callback.
 class DependencyCommitProof {
-    std::wstring owner_,vault_,directory_,manifest_,group_;
+    std::wstring owner_,vault_,directory_,manifest_,group_,keyGroup_,custody_;
     bool valid_=false,active_=false;
-    void Clear()noexcept{owner_.clear();vault_.clear();directory_.clear();manifest_.clear();group_.clear();valid_=active_=false;}
+    void Clear()noexcept{owner_.clear();vault_.clear();directory_.clear();manifest_.clear();group_.clear();keyGroup_.clear();custody_.clear();valid_=active_=false;}
     friend bool VerifyDependencyCommit(const std::wstring&,const PreparedNote&,const tcard_dependencies::Context&,DependencyCommitProof&,Result&);
     friend bool WithDependencyCommit(const std::wstring&,const std::wstring&,const PreparedNote&,const tcard_dependencies::Context&,const std::function<bool(const DependencyCommitProof&)>&,Result&);
 public:
@@ -113,9 +114,11 @@ public:
     DependencyCommitProof(DependencyCommitProof&&)=delete;
     DependencyCommitProof& operator=(DependencyCommitProof&&)=delete;
     bool Matches(const std::wstring& committedStorage,const tcard_dependencies::Manifest& manifest)const noexcept;
+    bool MatchesCustody(const std::wstring& custody,const tcard_dependencies::Manifest& manifest)const noexcept;
 };
 // Standalone verification does not activate a token for cleanup. Reader authority is the immutable replica, not supplied custody.
 bool VerifyDependencyCommit(const std::wstring& storage,const PreparedNote& note,const tcard_dependencies::Context& context,DependencyCommitProof& proof,Result& result);
+// Historical cleanup requires explicit protected reservation authority and current-key immutable proof; it grants no import/ACK authority.
 // Call before any Pool mutex/other owner lock. The narrow internal callback may delete only its matching duplicate custody.
 // Acquires sync_mutex then canonical sorted vault/native/custody owners before resolving a generation; callback stays inside those locks.
 bool WithDependencyCommit(const std::wstring& storage,const std::wstring& custodyRoot,const PreparedNote& note,const tcard_dependencies::Context& context,const std::function<bool(const DependencyCommitProof&)>& cleanup,Result& result);

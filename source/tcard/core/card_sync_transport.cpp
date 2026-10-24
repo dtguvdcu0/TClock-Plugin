@@ -60,10 +60,10 @@ struct Io {
     Clock::time_point deadline=Clock::now()+std::chrono::seconds(10);
     std::unique_ptr<tcard_crypto::Keys> secure;
     tcard_protocol::Session proof;
-    bool sourceOnly=false;bool streamWanted=false,stream=false;unsigned short localPort=0,remotePort=0;
+    bool sourceOnly=false,receiveOnly=false;std::wstring sourceTarget;bool streamWanted=false,stream=false;unsigned short localPort=0,remotePort=0;
     PeerSource* sourceProvider=nullptr;bool ownerWanted=false,ownerPeer=false;
     std::shared_ptr<std::atomic_bool> cancelled;
-    bool selection=false;bool chunks=false;bool objects=false;bool bootstrap=false;bool targets=false;bool custody=false;bool dependencies=false;std::wstring receiver;std::wstring path;SessionReport* report=nullptr;
+    bool selection=false;bool chunks=false;bool objects=false;bool bootstrap=false;bool targets=false;bool custody=false;bool dependencies=false;unsigned dependencyVersion=1;std::wstring receiver;std::wstring path;SessionReport* report=nullptr;
     tcard_prepare::Budget preparation;
     tcard_dependencies::Context dependencyContext;PreparedNote dependencyNote;std::unique_ptr<tcard_dependencies::Pool> dependencyPool;
     bool dependencyTransfer=false;bool dependencyCommitted=false;unsigned dependencyOffers=0;Clock::time_point dependencyDeadline;
@@ -213,7 +213,10 @@ static void sync_challenge(Tls& tls,Io& io,bool server,bool writing)
         if(io.sourceProvider)data.Insert(L"OwnerSource",JsonValue::CreateNumberValue(1));
         if(io.ownerWanted)data.Insert(L"OwnerSourceRequest",JsonValue::CreateNumberValue(1));
         if(io.streamWanted&&tcard_storage::Required(io.path)&&tcard_storage::Ready(io.path)){data.Insert(L"Persistent",JsonValue::CreateNumberValue(1));data.Insert(L"Port",JsonValue::CreateNumberValue(io.localPort));}
-        if(tcard_storage::Required(io.path)&&tcard_storage::Ready(io.path)){data.Insert(L"Chunks",JsonValue::CreateNumberValue(1));data.Insert(L"Objects",JsonValue::CreateNumberValue(1));data.Insert(L"Bootstrap",JsonValue::CreateNumberValue(1));data.Insert(L"BootstrapTarget",JsonValue::CreateNumberValue(1));data.Insert(L"BootstrapCustody",JsonValue::CreateNumberValue(1));if(!io.sourceOnly)data.Insert(L"Dependencies",JsonValue::CreateNumberValue(1));data.Insert(L"Node",JsonValue::CreateStringValue(tcard_bootstrap::Node(io.path)));}body=data.Stringify().c_str();}
+        if(tcard_storage::Required(io.path)&&tcard_storage::Ready(io.path)){data.Insert(L"Chunks",JsonValue::CreateNumberValue(1));data.Insert(L"Objects",JsonValue::CreateNumberValue(1));data.Insert(L"Bootstrap",JsonValue::CreateNumberValue(1));data.Insert(L"BootstrapTarget",JsonValue::CreateNumberValue(1));data.Insert(L"BootstrapCustody",JsonValue::CreateNumberValue(1));if(!io.ownerWanted){
+            if(io.sourceOnly)data.Insert(L"ReceiveDependencies",JsonValue::CreateNumberValue(1));
+            else{data.Insert(L"Dependencies",JsonValue::CreateNumberValue(1));data.Insert(L"SourceDependencies",JsonValue::CreateNumberValue(1));}
+            data.Insert(L"DependencySets",JsonValue::CreateNumberValue(tcard_dependencies::currentVersion));}data.Insert(L"Node",JsonValue::CreateStringValue(tcard_bootstrap::Node(io.path)));}body=data.Stringify().c_str();}
     sync_frame(tls,io,server?11:10,body,writing,4096);
     if(!writing){const auto data=JsonObject::Parse(body);const auto bytes=sync_decode(sync_string(data,L"Nonce"),32,32);std::copy(bytes.begin(),bytes.end(),nonce.begin());
         // The later private proof binds the TLS exporter, authenticating this TLS capability exchange.
@@ -226,7 +229,12 @@ static void sync_challenge(Tls& tls,Io& io,bool server,bool writing)
         io.targets=data.GetNamedNumber(L"BootstrapTarget",0)==1&&io.bootstrap;
         io.custody=data.GetNamedNumber(L"BootstrapCustody",0)==1&&io.targets;
         if(io.bootstrap){io.receiver=sync_string(data,L"Node");if(!sync_hex(io.receiver))throw std::runtime_error("Invalid bootstrap peer identity");}
-        io.selection=data.GetNamedNumber(L"Selection",0)==1;io.dependencies=!io.sourceOnly&&data.GetNamedNumber(L"Dependencies",0)==1&&io.selection&&io.custody;io.operations=data.GetNamedNumber(L"Operations",2)>=3?3:2;
+        io.selection=data.GetNamedNumber(L"Selection",0)==1;
+        io.receiveOnly=!io.ownerWanted&&data.GetNamedNumber(L"ReceiveDependencies",0)==1;
+        const bool dependencies=io.sourceOnly?data.GetNamedNumber(L"SourceDependencies",0)==1&&data.GetNamedNumber(L"Dependencies",0)==1:
+            data.GetNamedNumber(L"Dependencies",0)==1||io.receiveOnly;
+        io.dependencies=!io.ownerWanted&&dependencies&&io.selection&&io.custody;io.operations=data.GetNamedNumber(L"Operations",2)>=3?3:2;
+        if(io.dependencies)io.dependencyVersion=tcard_dependencies::Capability(data,L"DependencySets");
         io.stream=io.streamWanted&&io.selection&&io.bootstrap&&data.GetNamedNumber(L"Persistent",0)==1;
         if(io.stream){const double port=data.GetNamedNumber(L"Port",0);if(!std::isfinite(port)||port<0||port>65535||floor(port)!=port)throw std::runtime_error("Invalid persistent peer port");io.remotePort=static_cast<unsigned short>(port);}}
 }
@@ -496,6 +504,7 @@ static void sync_reply(session::Tls& tls,session::Io& io,const std::wstring& pat
         if(phase==L"delta"){std::wstring delta;if(io.dependencyPool)peerInventory=tcard_remote::DependencyUnwrap(package,io.dependencyContext,delta);
             else{if(io.targets)tcard_remote::Capture(path,io.receiver,package);peerInventory=selection::Unwrap(package,delta,io.objects);}package=std::move(delta);}
         if(phase!=L"delta")peerInventory=selection::Read(selection::Header(package));
+        if(io.receiveOnly&&selection::Read(selection::Header(package))!=selection::Inventory{})throw std::runtime_error("Receive-only source cannot upload originals");
         sync_measure(package,report,false,io.dependencyPool?&io.dependencyContext:nullptr);
         const bool imported=io.dependencyPool?session::sync_dependency_import(io,received):io.objects&&tcard_objects::Referenced(package)?tcard_blobs::Import(path,path,package,received):ImportChanges(path,package,received);
         if(!imported&&!received.partial)throw std::runtime_error("Cannot commit received exchange");
@@ -510,7 +519,7 @@ static void sync_reply(session::Tls& tls,session::Io& io,const std::wstring& pat
         if(maximumVersion>io.operations)throw std::runtime_error("Peer must be updated to synchronize authored dates");
         advertised=selection::Read(reply);
     }else if(phase==L"delta"){
-        if(!(io.dependencies?tcard_remote::ExportDependency(path,io.receiver,peerInventory,credentials.space,reply,exported,maximumVersion,peerCustody):io.bootstrap?tcard_remote::Export(path,io.receiver,peerInventory,reply,exported,maximumVersion,io.targets,io.custody,peerCustody):tcard_remote::Selection(path,peerInventory,reply,exported,maximumVersion,io.objects)))throw std::runtime_error("Cannot export selected replica state");
+        if(!(io.dependencies?tcard_remote::ExportDependency(path,io.receiver,peerInventory,credentials.space,reply,exported,maximumVersion,peerCustody,io.dependencyVersion):io.bootstrap?tcard_remote::Export(path,io.receiver,peerInventory,reply,exported,maximumVersion,io.targets,io.custody,peerCustody):tcard_remote::Selection(path,peerInventory,reply,exported,maximumVersion,io.objects)))throw std::runtime_error("Cannot export selected replica state");
         if(maximumVersion>io.operations)throw std::runtime_error("Peer must be updated to synchronize authored dates");
         std::wstring delta;advertised=tcard_remote::DependencyPacket(reply)?tcard_remote::DependencyUnwrap(reply,session::sync_dependency_context(io,reply,false),delta):selection::Unwrap(reply,delta,io.objects);
     }else{
@@ -542,7 +551,7 @@ static bool sync_round(session::Tls& tls,session::Io& io,const std::wstring& pat
         if(!tcard_remote::WireInventory(path,io.receiver,package,exported,maximumVersion,io.custody))throw std::runtime_error("Cannot export local inventory");
         if(maximumVersion>io.operations)throw std::runtime_error("Peer must be updated to synchronize authored dates");
     }else if(phase==L"delta"){
-        if(!(io.dependencies?tcard_remote::ExportDependency(path,io.receiver,peerHeader,credentials.space,package,exported,maximumVersion,peerCustody):io.bootstrap?tcard_remote::Export(path,io.receiver,peerHeader,package,exported,maximumVersion,io.targets,io.custody,peerCustody):tcard_remote::Selection(path,peerHeader,package,exported,maximumVersion,io.objects)))throw std::runtime_error("Cannot export selected local state");
+        if(!(io.dependencies?tcard_remote::ExportDependency(path,io.receiver,peerHeader,credentials.space,package,exported,maximumVersion,peerCustody,io.dependencyVersion):io.bootstrap?tcard_remote::Export(path,io.receiver,peerHeader,package,exported,maximumVersion,io.targets,io.custody,peerCustody):tcard_remote::Selection(path,peerHeader,package,exported,maximumVersion,io.objects)))throw std::runtime_error("Cannot export selected local state");
         if(maximumVersion>io.operations)throw std::runtime_error("Peer must be updated to synchronize authored dates");
     }else{
         if(!tcard_remote::Whole(path,package,exported))throw std::runtime_error("Cannot export local state");
@@ -550,6 +559,7 @@ static bool sync_round(session::Tls& tls,session::Io& io,const std::wstring& pat
     }
     std::wstring selectedDelta;const auto sent=phase==L"delta"?(tcard_remote::DependencyPacket(package)?tcard_remote::DependencyUnwrap(package,session::sync_dependency_context(io,package,false),selectedDelta):selection::Unwrap(package,selectedDelta,io.objects)):
         selection::Read(phase==L"inventory"?package:selection::Header(package));
+    if(source&&phase!=L"inventory")sync_source_require(phase==L"delta"&&!tcard_remote::DependencyPacket(package)&&selection::Read(selection::Header(selectedDelta))==selection::Inventory{},"Source acquisition cannot upload local intent");
     std::wstring localApplication,peerApplication;if(application)try{localApplication=application->Offer(sent);}catch(...){/* Optional ACK unavailable. */}
     std::wstring introduction;if(discovery)try{introduction=discovery->Offer(addressValue);}catch(...){}
     if(phase==L"delta"){if(tcard_remote::DependencyPacket(package)){const auto context=session::sync_dependency_context(io,package,false);sync_measure(selectedDelta,report,true,&context);}else sync_measure(selectedDelta,report,true);}
@@ -572,7 +582,7 @@ static bool sync_round(session::Tls& tls,session::Io& io,const std::wstring& pat
         if(source?sync_source_inspect(*source).ready:report.converged)return true;
         report.exchanged=false;return false;
     }
-    if(source)sync_source_capture(*source,package);
+    if(source)sync_source_capture(*source,package,io.dependencyPool?&io.dependencyContext:nullptr);
     selection::Inventory committedPeer;const bool atomicSource=phase==L"delta"&&io.targets&&JsonObject::Parse(package).GetNamedObject(L"RemoteBootstrap").GetNamedBoolean(L"Atomic");
     if(phase==L"delta"){std::wstring delta;if(io.dependencyPool)committedPeer=tcard_remote::DependencyUnwrap(package,io.dependencyContext,delta);
         else{if(io.targets)tcard_remote::Capture(path,io.receiver,package);committedPeer=selection::Unwrap(package,delta,io.objects);}package=std::move(delta);report.selected=true;}
@@ -747,7 +757,7 @@ static bool sync_exchange(const std::wstring& path,const Credentials& credential
                 if(result==SOCKET_ERROR)throw std::runtime_error("Peer connection wait failed");if(result>0)break;
             }
             int pending=0,size=sizeof(pending);if(getsockopt(socket.value,SOL_SOCKET,SO_ERROR,reinterpret_cast<char*>(&pending),&size)||pending)throw std::runtime_error("Peer connection failed");
-            logged.connected=true;logged.stage=L"authentication";report.connected=true;session::Context context(false);session::sync_configure(context,false);session::Io io{socket.value,credentials,{},stop};io.path=path;io.report=&report;io.sourceOnly=source!=nullptr;session::Tls tls(context.value);session::sync_handshake(tls,io,false);session::sync_authenticate(tls,io,false);report.authenticated=true;logged.stage=L"exchange";
+            logged.connected=true;logged.stage=L"authentication";report.connected=true;session::Context context(false);session::sync_configure(context,false);session::Io io{socket.value,credentials,{},stop};io.path=path;io.report=&report;io.sourceOnly=source!=nullptr;io.sourceTarget=source?source->target:L"";session::Tls tls(context.value);session::sync_handshake(tls,io,false);session::sync_authenticate(tls,io,false);report.authenticated=true;logged.stage=L"exchange";
             report.protocol=2;report.publicAddress=tcard_protocol::Address(io.secure->publicKey);
             const bool done=sync_round(tls,io,path,credentials,addressValue,round,peerHeader,peerCustody,report,discovery,application,source);
             logged.Complete();if(done)return true;

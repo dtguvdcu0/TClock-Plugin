@@ -67,9 +67,19 @@ bool Build(const std::wstring& sourcePath,const std::wstring& candidatePath,cons
         for(;;){
             const auto before=selection::Read(tcard_stage::Inventory(candidate));if(before==wanted)break;
             replace_require(++count<=32768,"Replacement candidate exceeds bounded steps");std::wstring packet,delta;Result result;unsigned version=0;
-            replace_require(ExportSelection(source,before,packet,result,version,true,true,status.target),"Cannot export replacement originals");selection::Unwrap(packet,delta,true);
-            if(tcard_objects::Referenced(delta)){tcard_blobs::Stage(source,candidate,delta);replace_require(tcard_blobs::Import(candidate,candidate,delta,result),"Cannot import replacement object originals");tcard_blobs::ReapLocal(candidate);}
-            else replace_require(ImportChanges(candidate,delta,result),"Cannot import replacement originals");
+            if(!ExportSelection(source,before,packet,result,version,true,true,status.target)){
+                replace_require(tcard_dependencies::LegacyFallback(result),"Cannot export replacement originals");
+                // Both local roots are locked and the protected source target is complete. Read verified objects sequentially.
+                const auto group=tcard_chunks::Group(source);
+                const tcard_dependencies::Context context{group,group,tcard_bootstrap::Node(source),tcard_bootstrap::Node(candidate),status.target,tcard_dependencies::currentVersion};
+                replace_require(ExportDependencies(source,before,context,delta,result,version),"Cannot export replacement dependencies");
+                tcard_dependencies::SourceReader reader(source,delta,context);PreparedNote note;
+                replace_require(PrepareDependencyNote(candidate,delta,context,reader,note,result)&&ImportDependencyNote(candidate,note,context,reader,result),"Cannot import replacement dependencies");
+            }else{
+                selection::Unwrap(packet,delta,true);
+                if(tcard_objects::Referenced(delta)){tcard_blobs::Stage(source,candidate,delta);replace_require(tcard_blobs::Import(candidate,candidate,delta,result),"Cannot import replacement object originals");tcard_blobs::ReapLocal(candidate);}
+                else replace_require(ImportChanges(candidate,delta,result),"Cannot import replacement originals");
+            }
             const auto after=selection::Read(tcard_stage::Inventory(candidate));
             replace_require(!result.pending&&!result.partial&&!selection::Missing(after,wanted)&&after!=before,"Replacement import did not make a complete causal step");
             if(progress)progress(L"replacement-copy",0,count);

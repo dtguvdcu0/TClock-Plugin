@@ -5,6 +5,7 @@
 #include "../core/card_source_job.h"
 #include "../core/card_source_candidate.h"
 #include "../core/card_native_receive.h"
+#include "../core/card_native_activation.h"
 #include "../core/card_sync_network.h"
 #include <winrt/Windows.Data.Json.h>
 #include <thread>
@@ -96,25 +97,48 @@ class Client {
     HANDLE acquisition_=nullptr,acquisitionStop_=nullptr;DWORD acquisitionPid_=0;
     std::wstring acquisitionJob_,acquisitionRequest_,acquisitionLaunch_;
     std::wstring directory_,profile_,sent_,received_,check_,storage_;
+    struct CustodyState {tcard_dependencies::Recovery native,shared;std::wstring inventory;};
+    CustodyState custody_;
+    // Reuse existing export workers; only new committed inventory restarts skipped proofs.
+    static void Reclaim(const std::wstring& storage,const std::wstring& profile,const std::wstring& space,const std::wstring& group,const std::wstring& header,CustodyState& state,std::stop_token stop)
+    {
+        const auto inventory=Hash(header);const bool progress=state.inventory!=inventory;state.inventory=inventory;
+        const auto node=tcard_bootstrap::Node(storage);
+        if(!stop.stop_requested())try{tcard_dependencies::Pool::Recover(storage,space,group,node,state.native,progress);}catch(...){/* Keep charged custody; normal admission remains bounded. */}
+        if(!stop.stop_requested())try{tcard_dependencies::Pool::Recover(storage,space,group,node,state.shared,progress,profile);}catch(...){/* Retry through retained recovery state, never discard content. */}
+    }
     struct ExportTask {
         std::atomic_bool done=false;bool okay=false;std::wstring package,hash;tcard_sync::Result result;
-        Stamp stamp,appliedStamp;bool batchMode=false;tcard_mail::Producer batch;
+        Stamp stamp,appliedStamp;bool batchMode=false;tcard_mail::Producer batch;CustodyState custody;
         std::jthread worker; // Destroy/join before fields used by the reader are released.
     };
     std::unique_ptr<ExportTask> exportTask_;
     struct SourceTask {std::atomic_bool done=false;bool okay=false;std::wstring hash;std::jthread worker;};
     std::unique_ptr<SourceTask> sourceTask_;std::wstring sourceQuery_;bool ownerSourceCap_=false;
     tcard_mail::Producer batch_;bool batchCap_=false,objectCap_=false,sourceCap_=false,dependencyCap_=false,batchMode_=false;
-    std::wstring dependencySpace_,dependencyGroup_,dependencyNode_;
+    std::wstring dependencySpace_,dependencyGroup_,dependencyNode_;unsigned dependencyVersion_=1;
     struct ReceiveTask {
         std::atomic_bool done=false;bool okay=false;std::wstring hash;Stamp stamp;
         std::vector<tcard_sync::PreparedNote> notes;size_t next=0;
         bool batch=false,objects=false,dependencies=false;tcard_mail::Inventory required;tcard_dependencies::Context context;
-        std::wstring target,delta;tcard_native::ReceiveResult native;
-        bool started=false,failed=false,pending=false,activated=false,proving=false;std::wstring proofGeneration,workerOwner,nativeOwner;ULONGLONG retryAt=0;
+        std::wstring target,delta;tcard_native::ReceiveResult native;std::unique_ptr<tcard_native::Activation> activation;
+        bool started=false,failed=false,pending=false,activated=false,proving=false,committing=false;std::wstring proofGeneration,workerOwner,nativeOwner;ULONGLONG retryAt=0;
         std::jthread worker;
     };
     std::unique_ptr<ReceiveTask> receiveTask_;
+    bool CommitAsync(const std::wstring& storage)
+    {
+        auto* task=receiveTask_.get();const auto mailbox=mailbox_;
+        const bool batches=batchCap_,objects=objectCap_,dependencies=dependencyCap_;const auto version=dependencyVersion_;
+        task->committing=true;task->done=false;receivedValid_=false;
+        try{task->worker=std::jthread([task,storage,mailbox,batches,objects,dependencies,version](std::stop_token stop){
+            try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
+                // Fresh committed byte verification and encrypted receipts stay off the UI thread.
+                std::wstring header;task->okay=tcard_mail::Commit(storage,mailbox,L"incoming-commit.json",task->hash,task->required,header,stop)&&!stop.stop_requested()&&
+                    tcard_ack::PublishInventory(mailbox,storage,header,batches,objects,true,dependencies,version);
+            }catch(...){task->okay=false;}task->done=true;
+        });return true;}catch(...){task->done=true;task->committing=false;task->okay=true;return false;}
+    }
     bool atomicWaiting_=false;
     std::vector<std::wstring> refresh_;
     std::wstring mailbox_,readyPhase_;
@@ -147,22 +171,25 @@ class Client {
         if(!batchCap_)return false;
         try{
             const auto owner=tcard_ack::Owner(process_,pid_);tcard_mail::Group(storage,mailbox_);
-            const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyCap_?tcard_bootstrap::Node(storage):L"",dependencyNode_,L""};
+            const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyCap_?tcard_bootstrap::Node(storage):L"",dependencyNode_,L"",dependencyVersion_};
             const bool changed=Changed(storage);Stamp applied;
             if(!changed&&!batch_.Changed(mailbox_,L"outgoing.json",L"outgoing-commit.json",owner)&&
                 Fingerprint(mailbox_,L"applied.json",applied)&&applied==appliedStamp_)return true;
             if(!async){
                 tcard_sync::Result result;std::wstring header;unsigned version=0;
                 if(!tcard_mail::Produce(storage,mailbox_,L"outgoing.json",L"outgoing-commit.json",owner,false,changed,batch_,result,objectCap_,sourceCap_,dependencyCap_?&channel:nullptr)||
-                    !tcard_sync::ExportInventory(storage,header,result,version)||!tcard_ack::PublishInventory(mailbox_,storage,header,true,objectCap_,true,dependencyCap_))return false;
+                    !tcard_sync::ExportInventory(storage,header,result,version)||!tcard_ack::PublishInventory(mailbox_,storage,header,true,objectCap_,true,dependencyCap_,dependencyVersion_))return false;
                 sent_=batch_.hash;exported_=GetTickCount64();Fingerprint(mailbox_,L"outgoing.json",sentStamp_);Fingerprint(mailbox_,L"applied.json",appliedStamp_);return true;
             }
-            exportTask_=std::make_unique<ExportTask>();auto* task=exportTask_.get();task->batch=batch_;task->batchMode=true;const auto mailbox=mailbox_;const auto objects=objectCap_,origins=sourceCap_,dependencies=dependencyCap_;
-            task->worker=std::jthread([task,storage,mailbox,owner,changed,objects,origins,dependencies,channel]{
+            exportTask_=std::make_unique<ExportTask>();auto* task=exportTask_.get();task->batch=batch_;task->batchMode=true;task->custody=custody_;const auto mailbox=mailbox_,profile=profile_;const auto objects=objectCap_,origins=sourceCap_,dependencies=dependencyCap_;
+            task->worker=std::jthread([task,storage,mailbox,profile,owner,changed,objects,origins,dependencies,channel](std::stop_token stop){
                 try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
                     std::wstring header;unsigned version=0;
-                    task->okay=tcard_mail::Produce(storage,mailbox,L"outgoing.json",L"outgoing-commit.json",owner,true,changed,task->batch,task->result,objects,origins,dependencies?&channel:nullptr)&&
-                        tcard_sync::ExportCommittedInventory(storage,header,task->result,version)&&tcard_ack::PublishInventory(mailbox,storage,header,true,objects,true,dependencies)&&
+                    task->okay=true;
+                    if(dependencies){task->okay=tcard_sync::ExportCommittedInventory(storage,header,task->result,version);
+                        if(task->okay)Reclaim(storage,profile,channel.space,channel.group,header,task->custody,stop);}
+                    task->okay=task->okay&&!stop.stop_requested()&&tcard_mail::Produce(storage,mailbox,L"outgoing.json",L"outgoing-commit.json",owner,true,changed,task->batch,task->result,objects,origins,dependencies?&channel:nullptr)&&
+                        tcard_sync::ExportCommittedInventory(storage,header,task->result,version)&&tcard_ack::PublishInventory(mailbox,storage,header,true,objects,true,dependencies,channel.version)&&
                         Fingerprint(mailbox,L"outgoing.json",task->stamp)&&Fingerprint(mailbox,L"applied.json",task->appliedStamp);
                     task->hash=task->batch.hash;
                 }catch(...){task->okay=false;}task->done=true;
@@ -455,15 +482,20 @@ public:
     bool Stop()
     {
         if(!StopAcquisition())return false;
-        sourceTask_.reset();sourceQuery_.clear();ownerSourceCap_=false;exportTask_.reset();receiveTask_.reset();atomicWaiting_=false;batch_={};batchMode_=false;batchCap_=false;objectCap_=false;sourceCap_=false;dependencyCap_=false;dependencySpace_.clear();dependencyGroup_.clear();dependencyNode_.clear();refresh_.clear();mailbox_.clear();readyPhase_.clear();readyAt_=0;receivedValid_=false;receivedAt_=0;retryAt_=0;
-        if(!process_){status=L"sync.off";return true;}
-        if(Running()){
-            // Only signal the IPC event owned by this exact child, never another profile's listener.
+        if(sourceTask_)sourceTask_->worker.request_stop();
+        if(exportTask_)exportTask_->worker.request_stop();
+        if(receiveTask_)receiveTask_->worker.request_stop();
+        // Wake this exact worker before joining readers, so shutdown can progress concurrently.
+        if(process_&&Running()){
             const auto eventName=L"Local\\TCardSync.UiStop."+std::to_wstring(pid_);
             for(unsigned attempt=0;attempt<100&&Running();++attempt){
                 tcard_asset::File event(OpenEventW(EVENT_MODIFY_STATE,FALSE,eventName.c_str()));
-                if(event){SetEvent(event.value);break;}Sleep(20);
+                if(event.value&&SetEvent(event.value))break;Sleep(20);
             }
+        }
+        sourceTask_.reset();sourceQuery_.clear();ownerSourceCap_=false;exportTask_.reset();custody_={};receiveTask_.reset();atomicWaiting_=false;batch_={};batchMode_=false;batchCap_=false;objectCap_=false;sourceCap_=false;dependencyCap_=false;dependencyVersion_=1;dependencySpace_.clear();dependencyGroup_.clear();dependencyNode_.clear();refresh_.clear();mailbox_.clear();readyPhase_.clear();readyAt_=0;receivedValid_=false;receivedAt_=0;retryAt_=0;
+        if(!process_){status=L"sync.off";return true;}
+        if(Running()){
             if(WaitForSingleObject(process_,15000)!=WAIT_OBJECT_0){status=L"sync.stopping";return false;}
         }
         CloseHandle(process_);process_=nullptr;pid_=0;status=L"sync.off";return true;
@@ -481,7 +513,7 @@ public:
         const std::wstring phase=object.GetNamedString(L"Status",L"sync.failed").c_str();
         status=phase==L"sync.ready"||phase==L"sync.pending"||phase==L"sync.peer_failed"||phase==L"sync.port_busy"?phase:L"sync.failed";
         batchCap_=object.GetNamedBoolean(L"MailboxBatches",false);objectCap_=batchCap_&&object.GetNamedBoolean(L"MailboxObjects",false);sourceCap_=objectCap_&&object.GetNamedBoolean(L"MailboxSourceTarget",false);
-        dependencyCap_=false;dependencySpace_.clear();dependencyGroup_.clear();dependencyNode_.clear();
+        dependencyCap_=false;dependencyVersion_=1;dependencySpace_.clear();dependencyGroup_.clear();dependencyNode_.clear();
         if(sourceCap_&&object.GetNamedBoolean(L"MailboxDependencies",false))try{
             tcard_crypto::Keys keys;if(!tcard_storage::LoadKey(profile_,keys))throw std::runtime_error("Dependency profile key unavailable");
             const auto space=tcard_sync::sync_string(object,L"DependencySpace"),group=tcard_sync::sync_string(object,L"DependencyGroup"),node=tcard_sync::sync_string(object,L"DependencyNode");
@@ -490,6 +522,7 @@ public:
                 tcard_sync::sync_string(object,L"DependencyWorker")!=tcard_ack::Owner(process_,pid_)||
                 tcard_sync::sync_string(object,L"DependencyOwner")!=tcard_ack::Owner(GetCurrentProcess(),GetCurrentProcessId()))
                 throw std::runtime_error("Dependency owned worker status differs");
+            dependencyVersion_=tcard_dependencies::Capability(object,L"DependencySets");
             dependencySpace_=space;dependencyGroup_=group;dependencyNode_=node;dependencyCap_=true;
         }catch(...){dependencyCap_=false;}
         ownerSourceCap_=dependencyCap_&&object.GetNamedBoolean(L"MailboxOwnerSource",false);
@@ -502,16 +535,16 @@ public:
         std::wstring retained;
         // Notifications avoid rebuilding unchanged history; retain a periodic full integrity audit.
         // Mailbox loss/replacement is checked on every poll, independently of local changes.
-        if(!Changed(storage)&&Read(Mailbox(profile_),L"outgoing.json",retained)&&Hash(retained)==sent_)return tcard_ack::Publish(Mailbox(profile_),storage,retained,batchCap_,objectCap_,true,dependencyCap_);
+        if(!Changed(storage)&&Read(Mailbox(profile_),L"outgoing.json",retained)&&Hash(retained)==sent_)return tcard_ack::Publish(Mailbox(profile_),storage,retained,batchCap_,objectCap_,true,dependencyCap_,dependencyVersion_);
         std::wstring package;tcard_sync::Result result;
         if(!tcard_sync::ExportChanges(storage,package,result)){
             if(batchCap_&&tcard_mail::Budget(result)){batchMode_=true;return SendBatches(storage,false);}
             exported_=0;sent_.clear();status=L"sync.export_failed";return false;}
         exported_=GetTickCount64();const auto hash=Hash(package);
         // A cached publication is not durable delivery: repair a missing or replaced mailbox.
-        if(hash==sent_&&Read(Mailbox(profile_),L"outgoing.json",retained)&&Hash(retained)==hash)return tcard_ack::Publish(Mailbox(profile_),storage,package,batchCap_,objectCap_,true,dependencyCap_);
+        if(hash==sent_&&Read(Mailbox(profile_),L"outgoing.json",retained)&&Hash(retained)==hash)return tcard_ack::Publish(Mailbox(profile_),storage,package,batchCap_,objectCap_,true,dependencyCap_,dependencyVersion_);
         if(!Publish(Mailbox(profile_),L"outgoing.json",package)){sent_.clear();status=L"sync.failed";return false;}
-        if(!tcard_ack::Publish(Mailbox(profile_),storage,package,batchCap_,objectCap_,true,dependencyCap_)){sent_.clear();status=L"sync.failed";return false;}
+        if(!tcard_ack::Publish(Mailbox(profile_),storage,package,batchCap_,objectCap_,true,dependencyCap_,dependencyVersion_)){sent_.clear();status=L"sync.failed";return false;}
         sent_=hash;return true;
     }
     // Explicit on-demand local snapshot evidence; this does not authorize remote replacement.
@@ -533,7 +566,7 @@ public:
         if(!Ready())return false;ReplySource(storage);
         if(exportTask_){
             if(!exportTask_->done.load())return false;
-            auto task=std::move(exportTask_);if(task->worker.joinable())task->worker.join();
+            auto task=std::move(exportTask_);if(task->worker.joinable())task->worker.join();custody_=std::move(task->custody);
             if(!task->okay){
                 if(task->result.error==L"Legacy journal requires UI preparation")return Send(storage);
                 if(batchCap_&&tcard_mail::Budget(task->result)){batchMode_=true;return SendBatches(storage,true);}
@@ -547,18 +580,20 @@ public:
         Stamp stamp,applied;const bool changed=Changed(storage);
         if(!changed&&!sent_.empty()&&Fingerprint(mailbox_,L"outgoing.json",stamp)&&stamp==sentStamp_&&
             (!tcard_storage::Required(mailbox_)||(Fingerprint(mailbox_,L"applied.json",applied)&&applied==appliedStamp_)))return true;
-        exportTask_=std::make_unique<ExportTask>();auto* task=exportTask_.get();const auto mailbox=mailbox_,previous=sent_;const auto batches=batchCap_,objects=objectCap_,dependencies=dependencyCap_;
-        try{task->worker=std::jthread([task,storage,mailbox,previous,batches,objects,dependencies]{
+        exportTask_=std::make_unique<ExportTask>();auto* task=exportTask_.get();task->custody=custody_;const auto mailbox=mailbox_,previous=sent_,profile=profile_,space=dependencySpace_,group=dependencyGroup_;const auto batches=batchCap_,objects=objectCap_,dependencies=dependencyCap_;const auto dependencyVersion=dependencyVersion_;
+        try{task->worker=std::jthread([task,storage,mailbox,previous,profile,space,group,batches,objects,dependencies,dependencyVersion](std::stop_token stop){
             try{
                 winrt::init_apartment(winrt::apartment_type::multi_threaded);
                 struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
-                task->okay=tcard_sync::ExportSnapshot(storage,task->package,task->result);
+                task->okay=tcard_sync::ExportSnapshot(storage,task->package,task->result,stop);
                 if(task->okay){
+                    if(dependencies)Reclaim(storage,profile,space,group,tcard_sync::selection::Header(task->package),task->custody,stop);
+                    if(stop.stop_requested())throw std::runtime_error("Native export interrupted");
                     task->hash=Hash(task->package);std::wstring retained;
                     // Publication and integrity checks are background work; native application stays with the owner.
                     const bool retainedOkay=task->hash==previous&&Read(mailbox,L"outgoing.json",retained)&&Hash(retained)==task->hash;
                     task->okay=(retainedOkay||Publish(mailbox,L"outgoing.json",task->package))&&
-                        tcard_ack::Publish(mailbox,storage,task->package,batches,objects,true,dependencies)&&Fingerprint(mailbox,L"outgoing.json",task->stamp)&&
+                        tcard_ack::Publish(mailbox,storage,task->package,batches,objects,true,dependencies,dependencyVersion)&&Fingerprint(mailbox,L"outgoing.json",task->stamp)&&
                         (!tcard_storage::Required(mailbox)||Fingerprint(mailbox,L"applied.json",task->appliedStamp));
                 }
             }catch(...){task->okay=false;}
@@ -570,6 +605,7 @@ public:
         std::vector<tcard::CardRecord>* previous=nullptr)
     {
         if(previous)previous->clear();
+        std::unique_lock guard(tcard_sync::sync_mutex,std::try_to_lock);if(!guard.owns_lock())return false;
         if(!Ready())return false;
         const auto now=GetTickCount64();
         if(receiveTask_&&!receiveTask_->done.load())return false;
@@ -580,7 +616,7 @@ public:
                 (!receivedValid_||!(stamp==receivedStamp_)||now-receivedAt_>=60000);
             if(freshStamp&&(receivedValid_||!(stamp==receivedStamp_)||now>=retryAt_)){
                 receiveTask_=std::make_unique<ReceiveTask>();auto* task=receiveTask_.get();task->stamp=stamp;const auto mailbox=mailbox_;const auto dependencies=dependencyCap_;
-                const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyNode_,dependencies?tcard_bootstrap::Node(storage):L"",L""};
+                const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyNode_,dependencies?tcard_bootstrap::Node(storage):L"",L"",dependencyVersion_};
                 task->workerOwner=tcard_ack::Owner(process_,pid_);task->nativeOwner=tcard_ack::Owner(GetCurrentProcess(),GetCurrentProcessId());
                 try{task->worker=std::jthread([task,mailbox,storage,stamp,dependencies,channel]{
                     try{winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -602,6 +638,14 @@ public:
             }
         }
         if(blocked)return false;
+        if(receiveTask_&&receiveTask_->committing){
+            if(!receiveTask_->okay){
+                receiveTask_->committing=false;receiveTask_->okay=true;receiveTask_->retryAt=now+3000;
+                receivedValid_=false;status=L"sync.apply_failed";return false;
+            }
+            received_=receiveTask_->hash;receivedValid_=true;atomicWaiting_=false;if(!receiveTask_->target.empty())exported_=0;
+            receivedStamp_=receiveTask_->stamp;receivedAt_=now;receiveTask_.reset();return false;
+        }
         if(receiveTask_&&receiveTask_->proving&&!receiveTask_->okay){
             receiveTask_->proving=false;receiveTask_->okay=true;receiveTask_->retryAt=now+3000;receivedValid_=false;status=L"sync.apply_failed";return false;
         }
@@ -619,15 +663,15 @@ public:
                 task->started=true;task->done=false;const auto mailbox=mailbox_;
                 task->worker=std::jthread([task,storage,mailbox](std::stop_token stop){
                     try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
-                        task->native=tcard_native::Receive(storage,task->target,task->delta,tcard_mail::Objects(mailbox,L"incoming.json"),stop,task->dependencies?&task->context:nullptr);task->okay=true;
+                        task->native=tcard_native::Receive(storage,task->target,task->delta,tcard_mail::Objects(mailbox,L"incoming.json"),stop,task->dependencies?&task->context:nullptr);
+                        task->activation.reset();if(task->native.ready)task->activation=tcard_native::Activation::Verify(task->native.source,stop);task->okay=true;
                     }catch(...){task->okay=false;}task->done=true;
                 });return false;
             }
             bool changed=false;try{
-                std::wstring header;
                 if(task->native.ready||task->native.applied){
                     if(!task->activated){
-                        if(task->native.ready)tcard_native::Activate(task->native.source);
+                        if(task->native.ready){if(!task->activation||!task->activation->Commit(task->native.source))throw std::runtime_error("Native activation proof unavailable");task->activation.reset();}
                         std::vector<tcard::CardRecord> loaded;if(!tcard::LoadCardSnapshot(storage,loaded))throw std::runtime_error("Activated native snapshot unavailable");
                         if(previous)*previous=cards;cards=std::move(loaded);changed=true;task->activated=true;
                     }
@@ -651,15 +695,14 @@ public:
                             task->activated=false;task->proving=false;task->started=false;task->retryAt=now+3000;receivedValid_=false;return changed;
                         }
                     }
-                    if(!tcard_mail::Commit(storage,mailbox_,L"incoming-commit.json",task->hash,task->required,header)||
-                        !tcard_ack::PublishInventory(mailbox_,storage,header,batchCap_,objectCap_,true,dependencyCap_))throw std::runtime_error("Native application receipt blocked");
-                    received_=task->hash;receivedValid_=true;atomicWaiting_=false;exported_=0;
+                    if(!CommitAsync(storage))throw std::runtime_error("Native application receipt blocked");
+                    return changed;
                 }else{
                     if(!tcard_handoff::Publish(storage,mailbox_,task->hash,task->target,task->native.header,task->native.rewind))throw std::runtime_error("Native custody publication blocked");
                     receivedValid_=false;retryAt_=now+300;
                 }
                 receivedStamp_=task->stamp;receivedAt_=now;receiveTask_.reset();return changed;
-            }catch(...){status=L"sync.apply_failed";if(!task->activated)task->started=false;task->retryAt=now+3000;return changed;}
+            }catch(...){status=L"sync.apply_failed";if(!task->activated){task->activation.reset();task->started=false;}task->retryAt=now+3000;return changed;}
         }
         tcard_sync::Result recovered;bool resumed=true;
         // Recover before each new exchange, rather than rescanning retained receipts for every note.
@@ -708,11 +751,10 @@ public:
                 receivedStamp_=receiveTask_->stamp;receivedAt_=now;
                 receivedValid_=!receiveTask_->failed&&!receiveTask_->pending;
                 if(receivedValid_&&receiveTask_->batch){
-                    std::wstring header;
-                    if(!tcard_mail::Commit(storage,mailbox_,L"incoming-commit.json",receiveTask_->hash,receiveTask_->required,header)||
-                        !tcard_ack::PublishInventory(mailbox_,storage,header,batchCap_,objectCap_,true,dependencyCap_)){
-                        receivedValid_=false;receiveTask_->retryAt=now+3000;status=L"sync.apply_failed";return changed;
+                    if(!CommitAsync(storage)){
+                        receivedValid_=false;receiveTask_->retryAt=now+3000;status=L"sync.apply_failed";
                     }
+                    return changed;
                 }
                 if(receivedValid_)received_=receiveTask_->hash;
                 else{retryAt_=now+3000;status=receiveTask_->failed?L"sync.apply_failed":L"sync.pending";}

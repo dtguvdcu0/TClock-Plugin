@@ -29,20 +29,22 @@ void sync_source_empty(const std::wstring& path)
 SourceSnapshot sync_source_inspect(const sync_source_state& state){return tcard_source::Inspect(state);}
 void sync_source_bind(sync_source_state& state,const session::Io& io)
 {
-    sync_source_require(io.selection&&io.targets&&io.objects&&!io.dependencies&&sync_hex(io.receiver),"Source requires authenticated target-capable v2 transport");
+    sync_source_require(io.selection&&io.targets&&io.objects&&sync_hex(io.receiver),"Source requires authenticated target-capable v2 transport");
     if(state.node.empty()){state.node=io.receiver;sync_source_write(state);}
     else sync_source_require(state.node==io.receiver,"Specified source identity changed");
 }
-void sync_source_capture(sync_source_state& state,const std::wstring& package)
+void sync_source_capture(sync_source_state& state,const std::wstring& package,const tcard_dependencies::Context* dependency=nullptr)
 {
     const auto root=JsonObject::Parse(package),boundary=root.GetNamedObject(L"RemoteBootstrap");
     const auto header=tcard_blobs::Canonical(std::wstring(boundary.GetNamedObject(L"Target").Stringify()));
-    const auto wanted=selection::Read(header);std::wstring delta;const auto envelope=selection::Unwrap(package,delta,true);
+    const auto wanted=selection::Read(header);std::wstring delta;const auto envelope=dependency?tcard_remote::DependencyUnwrap(package,*dependency,delta):selection::Unwrap(package,delta,true);
     sync_source_require(boundary.GetNamedNumber(L"Version")==1&&sync_string(boundary,L"Kind")==L"remote-bootstrap"&&
         sync_string(boundary,L"Source")==state.node&&sync_string(boundary,L"Receiver")==tcard_bootstrap::Node(state.path)&&
         sync_string(boundary,L"Group")==tcard_chunks::Group(state.path)&&sync_string(boundary,L"TargetDigest")==tcard_bridge::Hash(header)&&
         !selection::Missing(wanted,envelope),"Source target boundary differs");
-    selection::Validate(delta,wanted,true);
+    if(dependency){const auto manifest=tcard_dependencies::Read(delta,*dependency);
+        sync_source_require(!selection::Missing(tcard_dependencies::Required(manifest),wanted),"Source dependencies exceed pinned target");}
+    else selection::Validate(delta,wanted,true);
     if(state.target.empty()){state.target=header;sync_source_write(state);}
     else sync_source_require(selection::Read(state.target)==wanted,"Pinned source target changed");
 }

@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <condition_variable>
 #include "../core/card_sync_bridge.h"
 #include "../core/card_sync_ack.h"
 #include "../core/card_source_owner.h"
@@ -130,6 +131,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         status.Insert(L"MailboxBatches",JsonValue::CreateBooleanValue(tcard_storage::Required(mailbox)&&tcard_storage::Required(sync_storage(profile))));
         status.Insert(L"MailboxObjects",JsonValue::CreateBooleanValue(tcard_storage::Required(mailbox)&&tcard_storage::Required(sync_storage(profile))));
         status.Insert(L"MailboxSourceTarget",JsonValue::CreateBooleanValue(tcard_storage::Required(mailbox)&&tcard_storage::Required(sync_storage(profile))));
+        status.Insert(L"DependencySets",JsonValue::CreateNumberValue(tcard_dependencies::currentVersion));
         status.Insert(L"MailboxDependencies",JsonValue::CreateBooleanValue(!dependencyGroup.empty()));
         status.Insert(L"MailboxOwnerSource",JsonValue::CreateBooleanValue(!dependencyGroup.empty()));
         status.Insert(L"DependencySpace",JsonValue::CreateStringValue(dependencyGroup.empty()?L"":keys.space));
@@ -151,12 +153,15 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     // Only an enabled, selected new-group worker retries a retained source completion.
     // Current policy and fresh authentication apply; OFF/no-worker startup runs no thread.
     std::jthread sourceCompletion([&](std::stop_token cancel){
+        std::mutex completionMutex;std::condition_variable_any completionWake;
         try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
             while(!cancel.stop_requested()){
                 try{const auto job=tcard_source_job::Pending(profile);if(!job.empty()&&!tcard_native::Exists(tcard_source_job::Control(profile)+L"\\"+job+L".retired")){
                     tcard_source_job::Snapshot source;if(tcard_source_job::Inspect(profile,job,source)&&source.ready&&source.group==tcard_chunks::Group(profile))sync_complete_source(profile,job,keys,policy,cancel);
                 }}catch(...){/* Preserve protected pending evidence; no network fallback or key repair. */}
-                for(unsigned i=0;i<600&&!cancel.stop_requested();++i)std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                // Sleep until the retry deadline or cancellation, without periodic idle wakeups.
+                std::unique_lock completionLock(completionMutex);
+                completionWake.wait_for(completionLock,cancel,std::chrono::seconds(30),[]{return false;});
             }
         }catch(...){/* Completion is optional to local editing and ordinary synchronization. */}
     });
@@ -233,10 +238,10 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     });
     const auto replica=sync_storage(profile);
     struct Watch {HANDLE value=INVALID_HANDLE_VALUE;~Watch(){if(value!=INVALID_HANDLE_VALUE)FindCloseChangeNotification(value);}} watch;
-    ULONGLONG auditedAt=0;std::wstring cachedIncoming,cachedHash;bool exportNeeded=true;
+    ULONGLONG auditedAt=0,budgetRetryAt=0;std::wstring cachedIncoming,cachedHash;bool exportNeeded=true;
     tcard_bridge::Stamp incomingStamp,outgoingStamp;ULONGLONG incomingAuditAt=0,outgoingAt=0;std::wstring cachedOutgoing,outgoingHash;
     selection::Inventory expectedOwner,appliedOwner,outgoingRequired; tcard_bridge::Stamp appliedStamp;ULONGLONG appliedAt=0;
-    bool ownerBatches=false,ownerObjects=false,ownerAtomic=false,ownerDependencies=false,incomingBatches=false;std::wstring ownerNode;tcard_mail::Producer incomingBatch;tcard_handoff::Sender atomicSender;tcard_remote::Inbox remoteInbox;
+    unsigned ownerDependencyVersion=1;bool ownerBatches=false,ownerObjects=false,ownerAtomic=false,ownerDependencies=false,incomingBatches=false;std::wstring ownerNode;tcard_mail::Producer incomingBatch;tcard_handoff::Sender atomicSender;tcard_remote::Inbox remoteInbox;
     tcard_bridge::Stamp committedOutgoingStamp;ULONGLONG committedOutgoingAt=0;
     tcard_dependencies::Recovery dependencyRecovery;bool dependencyProgress=true;
     tcard_source_owner::Provider sourceOwner(mailbox,replica,applicationOwner,workerOwner,dependencyGroup,dependencyNode,parent.value);
@@ -272,10 +277,10 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 if(batch)try{
                     dependency=JsonObject::Parse(outgoing).GetNamedNumber(L"BatchVersion")==3;
                     if(dependency){
-                        selection::Inventory native;bool admitted=false;std::wstring nativeNode;
-                        if(dependencyGroup.empty()||!tcard_ack::Read(mailbox,applicationOwner,native,nullptr,nullptr,nullptr,&admitted,&nativeNode)||!admitted)
+                        selection::Inventory native;bool admitted=false;std::wstring nativeNode;unsigned nativeVersion=1;
+                        if(dependencyGroup.empty()||!tcard_ack::Read(mailbox,applicationOwner,native,nullptr,nullptr,nullptr,&admitted,&nativeNode,&nativeVersion)||!admitted)
                             throw std::runtime_error("Dependency native owner capability absent");
-                        expected=tcard_dependency_mail::Expected(outgoing,{keys.space,dependencyGroup,nativeNode,dependencyNode,L""},true);
+                        expected=tcard_dependency_mail::Expected(outgoing,{keys.space,dependencyGroup,nativeNode,dependencyNode,L"",nativeVersion},true);
                         required=tcard_mail::Decode(outgoing,tcard_mail::Group(replica,mailbox),delta,true,&expected);sourceAtomic=tcard_remote::NativeDependency(replica,mailbox,outgoing,expected);
                     }else{required=tcard_mail::Decode(outgoing,tcard_mail::Group(replica,mailbox),delta,true);sourceAtomic=tcard_remote::Native(replica,mailbox,outgoing);}
                     selection::Include(outgoingRequired,selection::Read(std::wstring(JsonObject::Parse(outgoing).GetNamedObject(L"Inventory").Stringify())));
@@ -311,7 +316,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         tcard_bridge::Stamp applied;
         if(!tcard_bridge::Fingerprint(mailbox,L"applied.json",applied)){ownerApplied=false;ownerBatches=false;ownerObjects=false;ownerAtomic=false;ownerDependencies=false;ownerNode.clear();appliedOwner={};appliedAt=0;}
         else if(!appliedAt||!(applied==appliedStamp)||now-appliedAt>=60000){
-            ownerApplied=tcard_ack::Read(mailbox,applicationOwner,appliedOwner,&ownerBatches,&ownerObjects,&ownerAtomic,&ownerDependencies,&ownerNode);if(appliedAt&&!(applied==appliedStamp))connections->Changed();appliedStamp=applied;appliedAt=ownerApplied?now:0;
+            ownerApplied=tcard_ack::Read(mailbox,applicationOwner,appliedOwner,&ownerBatches,&ownerObjects,&ownerAtomic,&ownerDependencies,&ownerNode,&ownerDependencyVersion);if(appliedAt&&!(applied==appliedStamp))connections->Changed();appliedStamp=applied;appliedAt=ownerApplied?now:0;
             // Retain newer owner intent even while an older outgoing slot is pinned.
             if(ownerApplied)selection::Include(outgoingRequired,appliedOwner);
         }
@@ -331,7 +336,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
             }
         }catch(...){report(L"sync.failed",pending);continue;}
         if(incomingBatches){
-            const tcard_dependencies::Context dependencyChannel{keys.space,dependencyGroup,dependencyNode,ownerNode,L""};
+            const tcard_dependencies::Context dependencyChannel{keys.space,dependencyGroup,dependencyNode,ownerNode,L"",ownerDependencyVersion};
             Result result;const bool changed=exportNeeded||now-auditedAt>=60000;
             if(changed){
                 std::wstring header;unsigned version=0;
@@ -345,13 +350,21 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 cachedHash=ownerAtomic&&ownerObjects?atomicSender.hash:incomingBatch.hash;auditedAt=now;exportNeeded=false;
             }
         }else{
+            if(budgetRetryAt){
+                // A fresh authenticated owner capability bypasses the oversized-export retry delay.
+                if(ownerApplied&&ownerBatches){incomingBatches=true;exportNeeded=true;continue;}
+                if(now<budgetRetryAt){report(L"sync.pending",pending);continue;}
+            }
             if(exportNeeded||now-auditedAt>=60000){
                 Result result;std::wstring incoming;
                 if(!ExportChanges(replica,incoming,result)){
-                    if(ownerApplied&&ownerBatches&&tcard_mail::Budget(result)){
-                        incomingBatches=true;exportNeeded=true;continue;
+                    if(tcard_mail::Budget(result)){
+                        if(ownerApplied&&ownerBatches){incomingBatches=true;exportNeeded=true;continue;}
+                        // Preserve pending content while avoiding a full export on every owner-wait poll.
+                        budgetRetryAt=GetTickCount64()+30000;report(L"sync.pending",pending);continue;
                     }report(L"sync.failed",pending);continue;
                 }
+                budgetRetryAt=0;
                 expectedOwner=selection::Read(selection::Header(incoming));
                 cachedHash=tcard_bridge::Hash(incoming);cachedIncoming=std::move(incoming);auditedAt=now;exportNeeded=false;
             }

@@ -14,13 +14,15 @@ struct sync_dependency_scope {
 };
 static tcard_dependencies::Context sync_dependency_context(const Io& io,const std::wstring& packet,bool receiving)
 {
+    if(receiving&&io.receiveOnly)throw std::runtime_error("Receive-only source cannot upload dependencies");
     if(!io.dependencies||!io.secure||!io.selection||!io.objects||!io.targets||!io.custody)throw std::runtime_error("Unnegotiated dependencies");
     const auto boundary=JsonObject::Parse(packet).GetNamedObject(L"RemoteBootstrap");const auto local=tcard_bootstrap::Node(io.path),group=tcard_asset::hash({io.secure->publicKey.begin(),io.secure->publicKey.end()});
     const auto target=tcard_blobs::Canonical(std::wstring(boundary.GetNamedObject(L"Target").Stringify()));
     if(boundary.GetNamedNumber(L"Version")!=1||sync_string(boundary,L"Kind")!=L"remote-bootstrap"||sync_string(boundary,L"Source")!=(receiving?io.receiver:local)||
         sync_string(boundary,L"Receiver")!=(receiving?local:io.receiver)||sync_string(boundary,L"Group")!=group||group!=tcard_chunks::Group(io.path)||sync_string(boundary,L"TargetDigest")!=tcard_bridge::Hash(target))
         throw std::runtime_error("Authenticated dependency context differs");
-    const tcard_dependencies::Context context{io.credentials.space,group,receiving?io.receiver:local,receiving?local:io.receiver,target};std::wstring manifest;
+    if(receiving&&io.sourceOnly&&!io.sourceTarget.empty()&&selection::Read(target)!=selection::Read(io.sourceTarget))throw std::runtime_error("Dependency source target differs from pinned source");
+    const tcard_dependencies::Context context{io.credentials.space,group,receiving?io.receiver:local,receiving?local:io.receiver,target,io.dependencyVersion};std::wstring manifest;
     tcard_remote::DependencyUnwrap(packet,context,manifest);const auto parsed=tcard_dependencies::Read(manifest,context);
     if(JsonObject::Parse(parsed.original).GetNamedNumber(L"Version")>io.operations)throw std::runtime_error("Peer must be updated to synchronize authored dates");return context;
 }

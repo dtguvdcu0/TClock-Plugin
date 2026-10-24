@@ -63,6 +63,8 @@ class Pool final:public Reader {
     {
         const auto relative=tcard_chunks::budget::Relative(catalog.owner,root_);bool metadata=false;std::set<size_t> objects;
         for(const auto& entry:catalog.entries){
+            if((entry.path==relative||entry.path.starts_with(relative+L"\\"))&&(entry.group.empty()?catalog.group:entry.group)!=manifest_.context.group)
+                throw std::runtime_error("Dependency reservation group differs");
             if(entry.path==relative){
                 if(entry.identity!=identity_||entry.bytes!=metadata_||entry.provisional||!entry.destination.empty())throw std::runtime_error("Dependency metadata reservation differs");
                 if(entry.retiring&&(entry.retireKind!=2||entry.partCount))throw std::runtime_error("Dependency binding retirement differs");
@@ -128,16 +130,18 @@ class Pool final:public Reader {
         if(provisional&&sealed)throw std::runtime_error("Duplicate dependency custody retained");
         if(sealed)return std::make_unique<tcard_objects::Cache>(root_,descriptor.object,manifest_.context.group,false,L"_sealed");
         if(sealedOnly)throw std::runtime_error("Dependency object is not sealed");
-        if(provisional)return std::make_unique<tcard_objects::Cache>(root_,descriptor.object,manifest_.context.group,false);
+        // Resume only an interrupted provisional manifest publication; existing records still require verification.
+        if(provisional)return std::make_unique<tcard_objects::Cache>(root_,descriptor.object,manifest_.context.group,
+            create&&!tcard_chunks::budget::Exists(Path(descriptor,false)+L"\\manifest.json"));
         if(!create)throw std::runtime_error("Dependency object unavailable");
         return std::make_unique<tcard_objects::Cache>(root_,descriptor.object,manifest_.context.group,true);
     }
-public:
-    Pool(const std::wstring& storage,const std::wstring& package,const Context& expected,bool create=true):manifest_(tcard_dependencies::Read(package,expected))
+    Pool(const std::wstring& storage,const std::wstring& package,const Context& expected,bool create,const DependencyCommitProof* proof):manifest_(tcard_dependencies::Read(package,expected))
     {
         std::lock_guard native(sync_mutex);SyncLock owner(tcard_chunks::budget::Owner(storage));if(!owner)throw std::runtime_error("Dependency custody busy");
         storage_=tcard_chunks::budget::Extended(sync_path_plain(tcard_native::Resolve(storage)));
-        if(tcard_chunks::Group(storage_)!=expected.group)throw std::runtime_error("Dependency authenticated group differs");
+        if(proof){if(create||!proof->MatchesCustody(storage_,manifest_))throw std::runtime_error("Dependency cleanup custody differs");}
+        else if(tcard_chunks::Group(storage_)!=expected.group)throw std::runtime_error("Dependency authenticated group differs");
         identity_=Digest(Encode(manifest_));binding_=Record(manifest_,true);root_=storage_+L"\\_dependency-custody\\"+identity_;
         // Reserve actual binding bytes and an atomic-publication copy, separate from ledger metadata.
         metadata_=Metadata(binding_);
@@ -169,6 +173,13 @@ public:
             return;
         }
         if(tcard_asset::encode(binding_).size()>tcard_asset::max_file-65536)throw std::runtime_error("Dependency custody metadata exceeds file budget");
+        // Sequential verified promotion bounds active fragments independently from retained complete-object custody.
+        size_t available=tcard_chunks::budget::maxBytes-tcard_chunks::budget::metadataBytes;
+        if(metadata_>available)throw std::runtime_error("Dependency custody exceeds transfer budget");available-=metadata_;
+        size_t sealedAvailable=tcard_chunks::budget::maxSealedBytes;
+        for(const auto& descriptor:manifest_.descriptors){const auto charge=Charge(descriptor);
+            if(charge>available||charge>sealedAvailable)throw std::runtime_error("Dependency custody exceeds transfer budget");sealedAvailable-=charge;
+        }
         tcard_chunks::budget::Reserve(storage_,root_,identity_,metadata_,false);
         // Reserve before creating the namespace; retain the parent against substitution while opening custody.
         const auto parent=storage_+L"\\_dependency-custody";
@@ -182,6 +193,10 @@ public:
         for(const auto& entry:catalog.entries)if(entry.path.starts_with(relative+L"\\")&&!entry.destination.empty()){
             const auto slot=entry.path.substr(entry.path.find_last_of(L'\\')+1);Seal(manifest_.descriptors.at(slots_.at(slot)));}
     }
+public:
+    Pool(const std::wstring& storage,const std::wstring& package,const Context& expected,bool create=true):Pool(storage,package,expected,create,nullptr){}
+    // Callback-only cleanup view; all Reader/receive methods remain disabled.
+    Pool(const std::wstring& storage,const std::wstring& package,const Context& expected,const DependencyCommitProof& proof):Pool(storage,package,expected,false,&proof){}
     void Bind(const Manifest& manifest)const override
     {
         std::lock_guard native(sync_mutex);SyncLock owner(tcard_chunks::budget::Owner(storage_));if(!owner)throw std::runtime_error("Dependency custody busy");
@@ -235,7 +250,7 @@ public:
     {
         try{
             if(!proof.Matches(committedStorage,manifest_))throw std::runtime_error("Dependency cleanup proof differs");
-            std::lock_guard guard(mutex_);if(tcard_chunks::Group(storage_)!=manifest_.context.group)throw std::runtime_error("Dependency cleanup key differs");
+            std::lock_guard guard(mutex_);if(!proof.MatchesCustody(storage_,manifest_))throw std::runtime_error("Dependency cleanup key differs");
             auto catalog=tcard_chunks::budget::Load(storage_);const auto relative=tcard_chunks::budget::Relative(catalog.owner,root_);
             const auto binding=std::find_if(catalog.entries.begin(),catalog.entries.end(),[&](const auto& entry){return entry.path==relative;});
             const bool exists=tcard_chunks::budget::Exists(root_);
@@ -267,21 +282,22 @@ public:
         }catch(...){return false;}
     }
     // One catalog-bound pool per progress pass. This is duplicate reclamation, never peer admission.
-    static void Recover(const std::wstring& storage,const std::wstring& space,const std::wstring& group,const std::wstring& node,Recovery& state,bool progress=false)
+    // A native owner may prove copies in its shared profile vault without admitting them as input.
+    static void Recover(const std::wstring& storage,const std::wstring& space,const std::wstring& group,const std::wstring& node,Recovery& state,bool progress=false,const std::wstring& custodyStorage=L"")
     {
-        std::unique_lock process(sync_mutex);const auto base=tcard_native::Base(storage);
-        const std::set<std::wstring> paths{sync_owner(base),tcard_chunks::budget::Owner(base)};std::vector<std::unique_ptr<SyncLock>> owners;
+        std::unique_lock process(sync_mutex);const auto base=tcard_native::Base(storage),vault=custodyStorage.empty()?storage:custodyStorage;
+        const std::set<std::wstring> paths{sync_owner(base),tcard_chunks::budget::Owner(base),tcard_chunks::budget::Owner(vault)};std::vector<std::unique_ptr<SyncLock>> owners;
         for(const auto& path:paths){if(path.empty())throw std::runtime_error("Dependency recovery owner unavailable");auto lock=std::make_unique<SyncLock>(path);
             if(!*lock)throw std::runtime_error("Dependency recovery owner busy");owners.push_back(std::move(lock));}
-        const tcard_chunks::budget::Catalog location{tcard_chunks::budget::Owner(base),group,{}};tcard_bridge::Stamp stamp;
+        const tcard_chunks::budget::Catalog location{tcard_chunks::budget::Owner(vault),group,{}};tcard_bridge::Stamp stamp;
         if(!tcard_bridge::Fingerprint(tcard_chunks::budget::Folder(location),L"budget.json",stamp)){
             if(tcard_chunks::budget::Exists(tcard_chunks::budget::Folder(location)+L"\\budget.json"))throw std::runtime_error("Dependency recovery catalog unavailable");
             state={};state.done=true;return;
         }
         const auto now=GetTickCount64();const auto due=std::find_if(state.retries.begin(),state.retries.end(),[&](const auto& entry){return entry.second.first<=now;});
         if(state.known&&stamp==state.stamp&&!progress&&state.done&&due==state.retries.end())return;
-        if(space.empty()||!sync_hex(group)||!sync_hex(node)||tcard_chunks::Group(storage)!=group)throw std::runtime_error("Dependency recovery identity differs");
-        auto catalog=tcard_chunks::budget::Load(storage);const std::wstring component=L"_dependency-custody\\";
+        if(space.empty()||!sync_hex(group)||!sync_hex(node)||tcard_chunks::Group(storage)!=group||(!custodyStorage.empty()&&tcard_chunks::Group(vault)!=group))throw std::runtime_error("Dependency recovery identity differs");
+        auto catalog=tcard_chunks::budget::Load(vault);const std::wstring component=L"_dependency-custody\\";
         if(!state.known||!(stamp==state.stamp)||progress){state.bindings.clear();state.done=false;state.stamp=stamp;state.known=true;
             for(const auto& entry:catalog.entries){const auto mark=entry.path.find(component);if(mark==std::wstring::npos)continue;
                 const auto tail=entry.path.substr(mark+component.size());if(!sync_hex(tail))continue;
@@ -308,7 +324,7 @@ public:
             if(!entry.retiring||entry.retireKind!=2||entry.partCount||std::any_of(catalog.entries.begin(),catalog.entries.end(),[&](const auto& row){return row.path.starts_with(relative+L"\\");})){state.retries.erase(relative);return;}
             if(!Entries(root).empty())throw std::runtime_error("Unknown final dependency retirement retained");
             if(tcard_chunks::budget::Exists(root)&&!RemoveDirectoryW(root.c_str()))throw std::runtime_error("Final dependency retirement blocked");
-            tcard_chunks::budget::Release(storage,root);state.retries.erase(relative);return;
+            tcard_chunks::budget::Release(vault,root);state.retries.erase(relative);return;
         }
         std::wstring record;if(!tcard_bridge::Read(root,L"binding.json",record))throw std::runtime_error("Dependency recovery binding unavailable");
         const auto value=JsonObject::Parse(record);
@@ -316,14 +332,17 @@ public:
         if(!value.HasKey(L"CapturedTarget")){state.retries.erase(relative);return;}
         const auto source=sync_string(value,L"Source"),receiver=sync_string(value,L"Receiver");
         bool retiring=entry.retiring;for(const auto& row:catalog.entries)if(row.path.starts_with(relative+L"\\")&&row.retiring)retiring=true;
-        if(sync_string(value,L"Space")!=space||sync_string(value,L"Group")!=group||(receiver!=node&&!(retiring&&source==node))){state.retries.erase(relative);return;}
-        Context expected{space,group,source,receiver,std::wstring(value.GetNamedObject(L"CapturedTarget").Stringify())};
+        const auto retainedGroup=sync_string(value,L"Group"),retainedSpace=sync_string(value,L"Space");const bool historical=retainedGroup!=group;
+        if(historical){if(entry.group!=retainedGroup){state.retries.erase(relative);return;}}
+        else if(retainedSpace!=space||(receiver!=node&&!(retiring&&source==node))){state.retries.erase(relative);return;}
+        // Protected historical context authorizes only fresh current-key duplicate proof, never peer admission or import.
+        Context expected{retainedSpace,retainedGroup,source,receiver,std::wstring(value.GetNamedObject(L"CapturedTarget").Stringify()),currentVersion};
         const auto manifest=tcard_dependencies::Read(record,expected);const auto identity=Digest(Encode(manifest));
         if(identity!=entry.identity||record!=Record(manifest,true)||entry.bytes!=Metadata(record))throw std::runtime_error("Dependency recovery stored binding differs");
         const auto mark=relative.find(component);auto custody=tcard_chunks::budget::Extended(catalog.owner+L"\\"+relative.substr(0,mark));
         while(custody.size()>3&&custody.back()==L'\\')custody.pop_back();const PreparedNote note{manifest.note,Encode(manifest)};Result result;
         // Existing authenticated context permits only fresh-proof duplicate cleanup, not networking or target ACK.
-        if(WithDependencyCommit(storage,custody,note,expected,[&](const DependencyCommitProof& proof){Pool pool(custody,note.package,expected,false);return pool.Release(storage,proof);},result))state.retries.erase(relative);
+        if(WithDependencyCommit(storage,custody,note,expected,[&](const DependencyCommitProof& proof){Pool pool(custody,note.package,expected,proof);return pool.Release(storage,proof);},result))state.retries.erase(relative);
         else{
             const auto directory=tcard_chunks::budget::Extended(tcard_native::Resolve(storage)),stem=sync_stem(manifest.note);
             const bool absent=!tcard_chunks::budget::Exists(directory+L"\\"+stem+L"\\card.json")&&!tcard_chunks::budget::Exists(directory+L"\\"+stem+L".deleted");

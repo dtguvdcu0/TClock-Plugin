@@ -45,11 +45,11 @@ inline Inventory Receipt(const std::wstring& text,const std::wstring& group,cons
     if(sync_string(root,L"Digest")!=tcard_bridge::Hash(header))throw std::runtime_error("Mailbox receipt digest differs");return selection::Read(header);
 }
 inline bool Commit(const std::wstring& storage,const std::wstring& mailbox,const std::wstring& leaf,const std::wstring& packet,
-    const Inventory& required,std::wstring& header)
+    const Inventory& required,std::wstring& header,std::stop_token stop={})
 {
     header.clear();try{
         const auto group=Group(storage,mailbox),owner=tcard_ack::Owner(GetCurrentProcess(),GetCurrentProcessId());Result result;unsigned version=0;
-        if(!sync_hex(packet)||!ExportCommittedInventory(storage,header,result,version))return false;
+        if(!sync_hex(packet)||!ExportCommittedInventory(storage,header,result,version,stop)||stop.stop_requested())return false;
         const auto committed=selection::Read(header);if(selection::Missing(required,committed)){header.clear();return false;}
         std::wstring previous;if(tcard_bridge::Read(mailbox,leaf,previous))try{if(Receipt(previous,group,owner,packet)==committed)return true;}catch(...){}
         JsonObject root;root.Insert(L"Version",JsonValue::CreateNumberValue(1));root.Insert(L"Kind",JsonValue::CreateStringValue(L"mailbox-commit"));

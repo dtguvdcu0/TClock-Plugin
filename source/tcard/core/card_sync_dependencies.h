@@ -7,8 +7,17 @@
 namespace tcard_dependencies {
 using namespace tcard_sync;
 using Bytes=tcard_crypto::Bytes;
+constexpr unsigned currentVersion=2;
+constexpr size_t legacyBytes=128*1024*1024,extendedBytes=256*1024*1024;
+inline unsigned Capability(const JsonObject& value,const wchar_t* name)
+{
+    const auto version=value.GetNamedNumber(name,1);
+    if(version!=1&&version!=currentVersion)throw std::runtime_error("Unsupported dependency capability");
+    return static_cast<unsigned>(version);
+}
 struct Context {
     std::wstring space,group,source,receiver,target;
+    unsigned version=1; // Independently negotiated maximum; parsed manifests retain their actual format.
     bool operator==(const Context&)const=default;
 };
 struct Descriptor {
@@ -27,7 +36,7 @@ inline bool LegacyFallback(const tcard_sync::Result& result)
 }
 inline void CheckContext(const Context& value)
 {
-    if(value.space.empty()||value.space.size()>128||!sync_hex(value.group)||!sync_hex(value.source)||!sync_hex(value.receiver))
+    if((value.version!=1&&value.version!=currentVersion)||value.space.empty()||value.space.size()>128||!sync_hex(value.group)||!sync_hex(value.source)||!sync_hex(value.receiver))
         throw std::runtime_error("Dependency authenticated context unavailable");
     selection::Read(value.target);
 }
@@ -49,7 +58,7 @@ inline const Descriptor& Find(const Manifest& value,unsigned kind,const std::wst
 }
 inline std::wstring Encode(const Manifest& value)
 {
-    CheckContext(value.context);JsonObject root;JsonArray objects;root.Insert(L"DependencyVersion",JsonValue::CreateNumberValue(1));
+    CheckContext(value.context);JsonObject root;JsonArray objects;root.Insert(L"DependencyVersion",JsonValue::CreateNumberValue(value.context.version));
     root.Insert(L"Space",JsonValue::CreateStringValue(value.context.space));root.Insert(L"Group",JsonValue::CreateStringValue(value.context.group));
     root.Insert(L"Source",JsonValue::CreateStringValue(value.context.source));root.Insert(L"Receiver",JsonValue::CreateStringValue(value.context.receiver));
     root.Insert(L"TargetDigest",JsonValue::CreateStringValue(Digest(value.context.target)));root.Insert(L"Note",JsonValue::CreateStringValue(value.note));
@@ -60,14 +69,15 @@ inline std::wstring Encode(const Manifest& value)
 inline Manifest Read(const std::wstring& text,const Context& expected)
 {
     CheckContext(expected);if(tcard_asset::encode(text).size()>tcard_asset::max_file-65536)throw std::runtime_error("Dependency metadata budget exceeded");
-    const auto root=JsonObject::Parse(text);if(root.GetNamedNumber(L"DependencyVersion")!=1||sync_string(root,L"Space")!=expected.space||sync_string(root,L"Group")!=expected.group||
+    const auto root=JsonObject::Parse(text);const auto version=Capability(root,L"DependencyVersion");if(!root.HasKey(L"DependencyVersion")||version>expected.version||sync_string(root,L"Space")!=expected.space||sync_string(root,L"Group")!=expected.group||
         sync_string(root,L"Source")!=expected.source||sync_string(root,L"Receiver")!=expected.receiver||sync_string(root,L"TargetDigest")!=Digest(expected.target))throw std::runtime_error("Dependency authenticated binding differs");
     Manifest value{expected,sync_string(root,L"Note"),sync_string(root,L"Operation"),sync_string(root,L"OriginalHash"),std::wstring(root.GetNamedObject(L"Original").Stringify()),{}};
     if(!tcard_asset::leaf(sync_stem(value.note))||sync_stem(value.note).starts_with(L"_")||!sync_hex(value.operation)||Digest(value.original)!=value.originalHash)throw std::runtime_error("Dependency original binding differs");
     const auto original=JsonObject::Parse(value.original);if(sync_string(original,L"Note")!=value.note||sync_string(original,L"Id")!=value.operation)throw std::runtime_error("Dependency original identity differs");
     const auto target=selection::Read(expected.target);if(!target.operations.contains({value.note,value.operation}))throw std::runtime_error("Dependency original outside captured target");
+    value.context.version=version;const size_t maximum=version==1?legacyBytes:extendedBytes;
     const auto objects=root.GetNamedArray(L"Descriptors");if(objects.Size()>1026)throw std::runtime_error("Dependency descriptor budget exceeded");size_t total=0;std::set<std::wstring> found;
-    for(const auto& item:objects){auto descriptor=ReadDescriptor(item.GetObject());if(!found.insert(Key(descriptor)).second||descriptor.object.size>128*1024*1024-total)throw std::runtime_error("Duplicate or excessive dependency descriptor");
+    for(const auto& item:objects){auto descriptor=ReadDescriptor(item.GetObject());if(!found.insert(Key(descriptor)).second||descriptor.object.size>maximum-total)throw std::runtime_error("Duplicate or excessive dependency descriptor");
         if(descriptor.kind==2&&!target.assets.contains({value.note,descriptor.object.name}))throw std::runtime_error("Dependency image outside captured target");total+=descriptor.object.size;value.descriptors.push_back(std::move(descriptor));}
     for(const auto* side:{L"Before",L"After"}){const auto state=original.GetNamedObject(side);if(state.HasKey(L"Source")||state.HasKey(L"Object"))throw std::runtime_error("Dependency original mixes inline source");Find(value,1,sync_string(state,L"SourceFile"));}
     return value;

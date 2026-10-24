@@ -6,6 +6,7 @@
 #include <set>
 #include <memory>
 #include <cstdint>
+#include <span>
 #ifndef MD4C_USE_UTF16
 #define MD4C_USE_UTF16
 #endif
@@ -60,7 +61,7 @@ inline HANDLE open_dir(const std::wstring& path, bool create)
     }
     return handle;
 }
-inline std::wstring hash(const std::vector<BYTE>& bytes)
+inline std::wstring hash_range(std::span<const BYTE> bytes)
 {
     if (bytes.size() > max_file) return {};
     BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE digest = nullptr;
@@ -73,6 +74,7 @@ inline std::wstring hash(const std::vector<BYTE>& bytes)
     if (ok) for (BYTE byte : value) { result += L"0123456789abcdef"[byte >> 4]; result += L"0123456789abcdef"[byte & 15]; }
     return result;
 }
+inline std::wstring hash(const std::vector<BYTE>& bytes){return hash_range(bytes);}
 inline std::vector<BYTE> encode(const std::wstring& text)
 {
     if (text.size() > max_file) throw std::runtime_error("Source too large");
