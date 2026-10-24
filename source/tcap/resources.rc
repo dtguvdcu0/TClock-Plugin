@@ -1,3 +1,36 @@
+#include <windows.h>
+#include "../common/plugin_version.h"
+
 #include "resource.h"
 
 IDI_APPICON ICON "icon3.ico"
+
+1 VERSIONINFO
+FILEVERSION TC_VERSION_VALUE(TCAP_VERSION)
+PRODUCTVERSION TC_VERSION_VALUE(TCAP_VERSION)
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+FILEFLAGS VS_FF_DEBUG
+#else
+FILEFLAGS 0
+#endif
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileVersion", TC_VERSION_TEXT(TCAP_VERSION)
+            VALUE "ProductVersion", TC_VERSION_TEXT(TCAP_VERSION)
+            VALUE "ProductName", "TCapture"
+            VALUE "InternalName", "TCapture"
+            VALUE "OriginalFilename", "TCapture.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
