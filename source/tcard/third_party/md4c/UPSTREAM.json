@@ -1,0 +1,7 @@
+{
+  "project": "MD4C",
+  "git": "https://github.com/mity/md4c.git",
+  "revision": "bed011fea706e1cfdf8f9c8a2dc3db263b675b2f",
+  "selection": "Fixed parser baseline; acquire only when local source is absent",
+  "license": "MIT"
+}

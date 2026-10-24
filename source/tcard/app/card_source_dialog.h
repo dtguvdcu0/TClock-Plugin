@@ -7,7 +7,7 @@ bool card_source_equal(const std::wstring& a,const std::wstring& b)
     auto left=normalize(a),right=normalize(b);const bool same=left==right;tcard_source_job::Wipe first{left},second{right};return same;
 }
 bool card_source_policy(const tcard_source_job::Intent& intent,const tcard_bridge::Settings& settings)
-{return intent.allow==settings.whitelist&&intent.deny==settings.blacklist&&intent.remote==settings.remoteAdmission;}
+{return intent.allow==settings.whitelist&&intent.deny==settings.blacklist&&!intent.remote;}
 struct CardSourceDialog {
     enum class Phase {Idle,Acquiring,Building,Ready,Paused,Failed};
     std::wstring directory,native,profile,words,job;std::mutex mutex;

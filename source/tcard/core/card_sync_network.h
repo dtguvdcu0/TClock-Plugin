@@ -70,8 +70,7 @@ inline std::wstring Flatten(const std::wstring& text)
 }
 struct Policy {
     std::vector<Rule> allow,deny,lan;
-    // Off-link admission is explicit; it never supplies an allow entry or authentication authority.
-    bool remoteAdmission=false;
-    bool Allows(uint32_t address)const{return (remoteAdmission||Matches(address,lan))&&IsAllowed(address,allow,deny);}
+    // Local subnet membership and explicit allow rules are both required.
+    bool Allows(uint32_t address)const{return Matches(address,lan)&&IsAllowed(address,allow,deny);}
 };
 }

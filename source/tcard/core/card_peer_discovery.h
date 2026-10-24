@@ -8,6 +8,7 @@
 namespace tcard_peer {
 // The worker owns this shared object until both listener and exchange threads stop.
 class Discovery final:public tcard_sync::PeerDiscovery {
+    // Retired Signaled receipts remain tombstones and never become LAN introductions.
     struct Hint {tcard_net::Peer peer;uint64_t first=0,expires=0;bool signaled=false;};
     struct Retry {uint64_t next=0;unsigned failures=0;};
     std::mutex mutex_;
@@ -16,10 +17,9 @@ class Discovery final:public tcard_sync::PeerDiscovery {
     tcard_net::Policy policy_;
     std::vector<std::wstring> local_;
     unsigned short port_;
-    bool enabled_,signaling_=false,healthy_=true;
+    bool enabled_,healthy_=true;
     std::function<void()> changed_;
     std::vector<Hint> hints_;
-    std::map<std::wstring,uint64_t> leases_; // At most one live lease per bounded retained first receipt; never persisted.
     std::map<std::wstring,Retry> retries_;
     static std::wstring Endpoint(const tcard_net::Peer& peer){return peer.ip+L":"+std::to_wstring(peer.port);}
     static bool Number(const JsonObject& item,const wchar_t* key,uint64_t& value)
@@ -76,8 +76,8 @@ class Discovery final:public tcard_sync::PeerDiscovery {
         }catch(...){healthy_=false;hints_.clear();}
     }
 public:
-    Discovery(const std::wstring& profile,const tcard_net::Policy& policy,bool enabled,unsigned short port=0,std::vector<std::wstring> local={},bool signaling=false,std::function<void()> changed={}):
-        cache_(profile,policy),profile_(profile),network_(Network(policy)),policy_(policy),local_(std::move(local)),port_(port),enabled_(enabled),signaling_(signaling),changed_(std::move(changed)){if(enabled_||signaling_)Load();}
+    Discovery(const std::wstring& profile,const tcard_net::Policy& policy,bool enabled,unsigned short port=0,std::vector<std::wstring> local={},std::function<void()> changed={}):
+        cache_(profile,policy),profile_(profile),network_(Network(policy)),policy_(policy),local_(std::move(local)),port_(port),enabled_(enabled),changed_(std::move(changed)){if(enabled_)Load();}
     std::wstring Offer(uint32_t remote)override
     {
         std::lock_guard lock(mutex_);if(!enabled_||!healthy_)return {};
@@ -106,40 +106,19 @@ public:
             if(updated.size()!=hints_.size()){const auto previous=hints_;hints_=std::move(updated);if(!Save())hints_=previous;}
         }catch(...){/* Optional malformed introductions do not affect note synchronization. */}
     }
-    // Caller already verified the fixed capsule against this worker's current public identity.
-    // Lease seconds are converted from Unix wire time; first receipts use local FILETIME cache time.
-    bool AcceptSignaled(const tcard_net::Peer& peer,uint64_t now,uint64_t leaseSeconds)
-    {
-        std::lock_guard lock(mutex_);
-        if(!signaling_||!healthy_||!leaseSeconds||leaseSeconds>90||now>UINT64_MAX-lifetime||!Allowed(peer))return false;
-        const auto endpoint=Endpoint(peer);const auto verified=cache_.Entries(now);
-        if(std::any_of(verified.begin(),verified.end(),[&](const Entry& entry){return Endpoint(entry.peer)==endpoint;}))return true;
-        auto found=std::find_if(hints_.begin(),hints_.end(),[&](const Hint& hint){return Endpoint(hint.peer)==endpoint;});
-        if(found!=hints_.end()){
-            if(found->first>now||now-found->first>=lifetime)return false;
-            leases_[endpoint]=(std::min)(found->first+lifetime,now+leaseSeconds);
-            return true; // Keep the old receipt and LAN expiry; signed online admission is independent.
-        }
-        if(hints_.size()>=capacity)return false;
-        hints_.push_back({peer,now,now+lifetime,true});
-        // Failed first-receipt publication leaves neither a new hint nor a live lease admitted.
-        if(!Save()){hints_.pop_back();return false;}
-        leases_[endpoint]=now+leaseSeconds;return true;
-    }
     bool Retained(const tcard_net::Peer& peer,uint64_t now=Now())
     {
-        std::lock_guard lock(mutex_);if((!enabled_&&!signaling_)||!healthy_||!Allowed(peer))return false;
+        std::lock_guard lock(mutex_);if(!enabled_||!healthy_||!Allowed(peer))return false;
         const auto endpoint=Endpoint(peer);
         for(const auto& entry:cache_.Entries(now))if(Endpoint(entry.peer)==endpoint)return true;
         for(const auto& hint:hints_)if(Endpoint(hint.peer)==endpoint&&hint.first<=now&&now-hint.first<lifetime){
-            const auto lease=leases_.find(endpoint);
-            if((enabled_&&!hint.signaled&&hint.expires>now)||(signaling_&&lease!=leases_.end()&&lease->second>now))return true;
+            if(!hint.signaled&&hint.expires>now)return true;
         }
         return false;
     }
     std::vector<tcard_net::Peer> Candidates(const std::vector<tcard_net::Peer>& manual,uint64_t now=Now())
     {
-        std::lock_guard lock(mutex_);std::vector<tcard_net::Peer> result;if((!enabled_&&!signaling_)||!healthy_)return result;
+        std::lock_guard lock(mutex_);std::vector<tcard_net::Peer> result;if(!enabled_||!healthy_)return result;
         auto append=[&](const tcard_net::Peer& peer){
             if(!Allowed(peer)||std::any_of(manual.begin(),manual.end(),[&](const auto& p){return Endpoint(p)==Endpoint(peer);})||
                 std::any_of(result.begin(),result.end(),[&](const auto& p){return Endpoint(p)==Endpoint(peer);}))return;
@@ -148,9 +127,7 @@ public:
         };
         for(const auto& entry:cache_.Entries(now))append(entry.peer);
         for(const auto& hint:hints_)if(hint.first<=now&&now-hint.first<lifetime){
-            const auto lease=leases_.find(Endpoint(hint.peer));const bool signedLive=signaling_&&lease!=leases_.end()&&lease->second>now;
-            const bool lanLive=enabled_&&!hint.signaled&&hint.expires>now;
-            if(lanLive||signedLive)append(hint.peer);
+            if(!hint.signaled&&hint.expires>now)append(hint.peer);
         }
         return result;
     }
@@ -166,7 +143,7 @@ public:
             if(enabled_&&changed_&&!known){const auto current=cache_.Entries(now);
                 if(std::any_of(current.begin(),current.end(),[&](const Entry& entry){return Endpoint(entry.peer)==Endpoint(peer);}))changed_();}
         }
-        if(!enabled_&&!signaling_)return;
+        if(!enabled_)return;
         // Bounded retry state, one exchange at a time; failures back off to 30 minutes.
         const auto endpoint=Endpoint(peer);if(!retries_.contains(endpoint)&&retries_.size()>=capacity*2)retries_.erase(retries_.begin());
         auto& retry=retries_[endpoint];retry.failures=success?0:(std::min)(retry.failures+1,7u);

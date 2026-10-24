@@ -6,8 +6,9 @@
 #include <vector>
 #include <stdexcept>
 
-// No profile creation, static Userenv import, store scan or write is performed by SID discovery.
-namespace tcard_signal_acl {
+// Compatibility boundary: preserve the existing private-store deny for the retired package.
+// This derives only its SID; it never creates a profile or starts the removed server.
+namespace tcard_private_acl {
 inline constexpr wchar_t productName[]=L"TCard.Signaling.v1";
 inline std::wstring SidText(PSID sid)
 {
@@ -70,22 +71,5 @@ inline bool PreserveUnavailable(const std::wstring& directory,PSID user,bool& ha
     const bool read=Read(file,bytes);CloseHandle(file);if(!read){handled=true;return false;}if(!PackagePolicy(bytes))return true;
     // Without the expected SID there is no proof that a new protected child preserves installed policy.
     handled=true;return false;
-}
-inline bool Merge(const std::vector<BYTE>& old,PACL& merged)
-{
-    merged=nullptr;const auto& identity=Identity();if(identity.empty()||old.empty())return false;PACL acl=nullptr;BOOL present=FALSE,defaulted=FALSE;
-    if(!GetSecurityDescriptorDacl(const_cast<BYTE*>(old.data()),&present,&acl,&defaulted)||!present||!acl)return false;
-    PSID package=nullptr,ownerRights=nullptr;if(!ConvertStringSidToSidW(identity.c_str(),&package))return false;
-    if(!ConvertStringSidToSidW(L"S-1-3-4",&ownerRights)){LocalFree(package);return false;}
-    EXPLICIT_ACCESSW rules[2]{};rules[0].grfAccessPermissions=FILE_ALL_ACCESS;rules[0].grfAccessMode=DENY_ACCESS;
-    rules[1].grfAccessPermissions=READ_CONTROL;rules[1].grfAccessMode=SET_ACCESS;
-    for(unsigned i=0;i<2;++i){rules[i].grfInheritance=SUB_CONTAINERS_AND_OBJECTS_INHERIT;rules[i].Trustee.TrusteeForm=TRUSTEE_IS_SID;rules[i].Trustee.TrusteeType=TRUSTEE_IS_UNKNOWN;}
-    rules[0].Trustee.ptstrName=static_cast<LPWSTR>(package);rules[1].Trustee.ptstrName=static_cast<LPWSTR>(ownerRights);
-    const auto result=SetEntriesInAclW(2,rules,acl,&merged);LocalFree(package);LocalFree(ownerRights);return result==ERROR_SUCCESS;
-}
-inline bool Apply(HANDLE file)
-{
-    std::vector<BYTE> old;if(!Read(file,old))return false;PACL acl=nullptr;if(!Merge(old,acl))return false;
-    const auto result=SetSecurityInfo(file,SE_FILE_OBJECT,DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,nullptr,nullptr,acl,nullptr);LocalFree(acl);return result==ERROR_SUCCESS;
 }
 }

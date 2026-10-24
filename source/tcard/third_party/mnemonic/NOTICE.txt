@@ -5,3 +5,6 @@ English word-list SHA-256 (upstream bytes): 2f5eed53a4727b4bf8880d8f3f199efc90e5
 License: MIT (see LICENSE).
 Only the BIP39 English word list and entropy/checksum encoding are used.
 TCard does not use wallet PBKDF2 seed derivation.
+The ignored generated/english.h keeps the exact ordered recovery word list.
+If missing, the build uses the ignored local checkout at the fixed revision
+and verifies the upstream word-list hash before generating the header.

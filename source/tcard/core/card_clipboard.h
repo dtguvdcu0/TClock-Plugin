@@ -11,7 +11,7 @@
 #include <string_view>
 #include <functional>
 extern "C" {
-#include "../third_party/md4c/entity.h"
+#include "../third_party/md4c/local/src/entity.h"
 }
 
 #pragma comment(lib, "crypt32.lib")

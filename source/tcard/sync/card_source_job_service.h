@@ -28,7 +28,7 @@ int sync_source_job(const std::wstring& profile,const std::wstring& request)
         Require(tcard_compat::DecodeSeed(intent.words,seed)&&tcard_crypto::Derive(seed,keys)&&tcard_ack::Identity(keys)!=intent.previous,"Acquisition requires a different current key");
         tcard_net::Policy policy;std::wstring defaults,error;std::vector<tcard_net::Peer> peers;
         Require(DiscoverLan(policy,defaults,error)&&tcard_net::ParseRules(intent.allow,policy.allow)&&tcard_net::ParseRules(intent.deny,policy.deny)&&tcard_net::ParsePeers(intent.endpoint,0,peers)&&peers.size()==1,"Acquisition policy unavailable");
-        policy.remoteAdmission=intent.remote;Require(policy.Allows(peers[0].address),"Acquisition endpoint blocked by IP policy");
+        Require(!intent.remote&&policy.Allows(peers[0].address),"Acquisition endpoint blocked by IP policy");
         if(cancellation.stop_requested()){publish(L"cancelled");return 2;}
         Require(tcard_bridge::Protect(profile+L"-sources"),"Acquisition parent unavailable");const auto root=Root(profile,job);Require(tcard_bridge::Protect(root),"Acquisition replica unavailable");
         std::string reason;

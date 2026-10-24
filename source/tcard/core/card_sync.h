@@ -119,10 +119,6 @@ bool VerifyDependencyCommit(const std::wstring& storage,const PreparedNote& note
 // Call before any Pool mutex/other owner lock. The narrow internal callback may delete only its matching duplicate custody.
 // Acquires sync_mutex then canonical sorted vault/native/custody owners before resolving a generation; callback stays inside those locks.
 bool WithDependencyCommit(const std::wstring& storage,const std::wstring& custodyRoot,const PreparedNote& note,const tcard_dependencies::Context& context,const std::function<bool(const DependencyCommitProof&)>& cleanup,Result& result);
-// Narrow internal Signal protection boundary; caller quiesces its UI/worker and passes admitted native/profile roots.
-// Acquires process mutex then sorted stable native/key/profile/control owners before any callback mutation.
-// The callback does not grant Signal admission or replace fresh protected-root/identity verification.
-bool WithSignalProtection(const std::wstring& nativeRoot,const std::wstring& profileRoot,const std::function<bool()>& protect,Result& result);
 // Revalidate and retry retained authenticated receipts; call on the storage owner thread.
 bool RetryChanges(const std::wstring& storagePath, Result& result);
 

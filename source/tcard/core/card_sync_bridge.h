@@ -3,7 +3,7 @@
 #include "card_assets.h"
 #include <aclapi.h>
 #include <sddl.h>
-#include "card_signal_acl.h"
+#include "card_private_acl.h"
 #include "card_sync_network.h"
 #include <wincrypt.h>
 #include <winrt/Windows.Data.Json.h>
@@ -12,27 +12,6 @@
 #pragma comment(lib, "advapi32.lib")
 
 namespace tcard_bridge {
-// Public configured node metadata only; no TLS, key loading or synchronization authority.
-struct SignalNode {tcard_net::Peer peer;std::wstring pin;};
-inline bool ParseSignalNodes(const std::wstring& text,std::vector<SignalNode>& nodes)
-{
-    nodes.clear();if(text.size()>8192)return false;std::vector<std::wstring> tokens;
-    if(!tcard_net::SplitList(text,tokens)||tokens.size()>32)return false;
-    for(const auto& token:tokens){const auto at=token.find(L'@');
-        if(at==std::wstring::npos||token.find(L'@',at+1)!=std::wstring::npos)return false;
-        const auto endpoint=token.substr(0,at),pin=token.substr(at+1);std::vector<tcard_net::Peer> parsed;
-        if(pin.size()!=64||pin.find_first_not_of(L"0123456789abcdef")!=std::wstring::npos||
-            !tcard_net::ParsePeers(endpoint,0,parsed)||parsed.size()!=1||endpoint!=parsed[0].ip+L":"+std::to_wstring(parsed[0].port))return false;
-        if(std::any_of(nodes.begin(),nodes.end(),[&](const SignalNode& node){return node.peer.address==parsed[0].address&&node.peer.port==parsed[0].port;}))return false;
-        nodes.push_back({parsed[0],pin});
-    }return true;
-}
-inline bool ParsePublishedSyncEndpoint(const std::wstring& text,tcard_net::Peer& peer)
-{
-    peer={};if(text.empty())return true;std::vector<tcard_net::Peer> parsed;
-    if(text.size()>32||!tcard_net::ParsePeers(text,0,parsed)||parsed.size()!=1||text!=parsed[0].ip+L":"+std::to_wstring(parsed[0].port))return false;
-    peer=parsed[0];return true;
-}
 inline std::wstring Quote(const std::wstring& value)
 {
     std::wstring result=L"\"";size_t slashes=0;
@@ -62,9 +41,9 @@ inline bool Protect(const std::wstring& directory)
     std::vector<BYTE> storage(size);if(!size||!GetTokenInformation(token,TokenUser,storage.data(),size,&size))return false;
     auto user=reinterpret_cast<TOKEN_USER*>(storage.data());LPWSTR sid=nullptr;
     if(!ConvertSidToStringSidW(user->User.Sid,&sid))return false;
-    bool preserved=false;const bool safe=tcard_signal_acl::PreserveUnavailable(directory,user->User.Sid,preserved);
+    bool preserved=false;const bool safe=tcard_private_acl::PreserveUnavailable(directory,user->User.Sid,preserved);
     if(preserved){LocalFree(sid);return safe;}if(!safe){LocalFree(sid);return false;}
-    const auto sddl=tcard_signal_acl::Template(sid);LocalFree(sid);
+    const auto sddl=tcard_private_acl::Template(sid);LocalFree(sid);
     PSECURITY_DESCRIPTOR descriptor=nullptr;if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(),SDDL_REVISION_1,&descriptor,nullptr))return false;
     struct Descriptor{PSECURITY_DESCRIPTOR value;~Descriptor(){LocalFree(value);}} scope{descriptor};
     SECURITY_ATTRIBUTES security{sizeof(security),descriptor,FALSE};

@@ -1,8 +1,9 @@
 {
   "project": "wolfSSL",
+  "git": "https://github.com/wolfSSL/wolfssl.git",
   "release_api": "https://api.github.com/repos/wolfSSL/wolfssl/releases/latest",
-  "selection": "Latest official stable release at build time",
+  "selection": "Latest official stable tag only when local source is absent; reuse existing source offline",
   "license": "GPL-3.0",
   "upstream": "https://github.com/wolfSSL/wolfssl",
-  "verification": "Official HTTPS download; release identity and cache SHA-256 recorded locally under out/deps."
+  "verification": "Official Git checkout; selected revision recorded locally under out/deps/wolfssl/source.json. Existing developer edits are preserved."
 }

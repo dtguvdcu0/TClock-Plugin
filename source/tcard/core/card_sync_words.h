@@ -1,7 +1,7 @@
 #pragma once
 #include "card_sync_transport.h"
 #include "card_assets.h"
-#include "../third_party/mnemonic/english.h"
+#include "../third_party/mnemonic/generated/english.h"
 #include <array>
 #include <algorithm>
 

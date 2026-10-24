@@ -8,9 +8,9 @@
 #ifndef MD4C_USE_UTF16
 #define MD4C_USE_UTF16
 #endif
-#include "../third_party/md4c/md4c.h"
+#include "../third_party/md4c/local/src/md4c.h"
 extern "C" {
-#include "../third_party/md4c/entity.h"
+#include "../third_party/md4c/local/src/entity.h"
 }
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")

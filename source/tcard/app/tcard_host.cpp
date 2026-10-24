@@ -13,7 +13,6 @@
 #include "card_sync_client.h"
 // Shared log/transport types must be declared before the local UI anonymous namespace.
 #include "../core/card_connection_log.h"
-#include "../core/card_signal_sandbox.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -59,9 +58,6 @@ constexpr UINT_PTR kTimer = 1;
 constexpr UINT_PTR kClipTimer = 2;
 constexpr UINT_PTR kSyncTimer = 3;
 constexpr UINT_PTR kTrashTimer = 4;
-constexpr UINT_PTR kSignalTimer = 5;
-constexpr UINT kSignalRequest = WM_APP + 8;
-constexpr UINT kSignalComplete = WM_APP + 9;
 constexpr UINT kRendererEdit = WM_APP + 1;
 constexpr UINT kRendererSave = WM_APP + 2;
 constexpr UINT kRendererShowList = WM_APP + 3;
@@ -129,12 +125,8 @@ decltype(&TCardWuiIsCardEditing) g_is_card_editing = nullptr;
 std::wstring g_file_path;
 unsigned g_history_limit = 0;
 tcard_bridge::Client g_sync_client;
-// UI-thread admission flag grants the background job exclusive Client/native writer ownership.
-bool g_signal_admitting=false;
 bool g_storage_locked=false;
 bool g_key_active=false;
-std::wstring g_signal_status;
-bool card_signal_busy(){return g_signal_admitting;}
 struct TrashTask {
     std::atomic_bool done{false};
     bool result=false;
@@ -143,7 +135,6 @@ struct TrashTask {
 std::unique_ptr<TrashTask> g_trash_task;
 void card_purge_trash(HWND hwnd)
 {
-    if(card_signal_busy())return;
     if(g_trash_task){
         if(!g_trash_task->done.load())return;
         const bool okay=g_trash_task->result;g_trash_task.reset();
@@ -165,7 +156,7 @@ void card_purge_trash(HWND hwnd)
 }
 bool card_save_records(std::vector<tcard::CardRecord>& cards,bool checkpoint=true)
 {
-    return !g_storage_locked&&!card_signal_busy()&&tcard::SaveCards(g_file_path,cards,checkpoint,g_history_limit);
+    return !g_storage_locked&&tcard::SaveCards(g_file_path,cards,checkpoint,g_history_limit);
 }
 COLORREF g_preview_color = RGB(255, 245, 168);
 HBRUSH g_preview_brush = nullptr;
@@ -652,8 +643,6 @@ bool card_sync_start(HWND owner,const tcard_bridge::Settings& settings,bool star
 bool card_rotate_key(HWND owner,std::wstring& display);
 bool card_join_key(HWND owner,const std::wstring& words,std::wstring& display);
 bool g_source_dialog=false;
-void card_signal_request(bool hosting);
-bool card_signal_available();
 #include "card_preferences.h"
 
 void fill_list()
@@ -945,7 +934,6 @@ void card_set_view(bool trash)
 }
 void card_restore_trash()
 {
-    if(card_signal_busy())return;
     const auto index=card_view_index();if(!g_trash_mode||index<0)return;
     tcard::CardRecord restored;
     std::vector<tcard::CardRecord> loaded;
@@ -959,7 +947,6 @@ void card_restore_trash()
 }
 void card_remove_trash(bool all)
 {
-    if(card_signal_busy())return;
     const auto index=card_view_index();if(!g_trash_mode||(!all&&index<0))return;
     std::vector<std::wstring> tokens;
     if(all){for(const auto& record:g_trash_records)if(record.readable)tokens.push_back(record.token);}
@@ -976,7 +963,7 @@ void card_remove_trash(bool all)
 
 bool delete_card_id(const std::wstring& id)
 {
-    if (card_signal_busy() || g_editing || id.empty()) return false;
+    if (g_editing || id.empty()) return false;
     const auto card = std::find_if(g_cards.begin(), g_cards.end(), [&](const auto& value) { return value.id == id; });
     if (card == g_cards.end()) return false;
     std::wstring prompt = tcard_lang::text(L"message.delete_prompt", L"Delete '%s'?");
@@ -1205,7 +1192,6 @@ void clip_menu(HMENU menu, bool target)
 void import_clip(UINT command, const std::wstring& targetId, const tcard_clip::Clip* ready = nullptr,
     const tcard::CardRecord* previous = nullptr)
 {
-    if(card_signal_busy()){MessageBoxW(g_main,tcard_text(L"sync.signal_host_busy",L"Finish editing, image imports and cleanup, then save Sync settings again to start hosting."),L"TCard",MB_OK|MB_ICONINFORMATION);return;}
     if (g_clip_job) {
         MessageBoxW(g_main, tcard_text(L"clip.busy", L"Images are being downloaded. Please wait before importing again."), L"TCard", MB_OK); return;
     }
@@ -1329,133 +1315,10 @@ void import_clip(UINT command, const std::wstring& targetId, const tcard_clip::C
         tcard_text(L"clip.external", L"Some images could not be embedded (download, format or size limit). Their original URLs were kept as links."), L"TCard", MB_OK | MB_ICONINFORMATION);
 }
 
-struct SignalWindow {HWND hwnd=nullptr;bool enabled=false;};
-struct SignalTask {
-    std::atomic_bool done=false;
-    bool okay=false,hosting=false,stopped=false,stopOnly=false;
-    std::wstring pin,error;
-    std::vector<SignalWindow> windows;
-    std::unique_ptr<tcard_signal_sandbox::Profile> product;
-    std::unique_ptr<tcard_signal_sandbox::Runtime> runtime;
-    std::unique_ptr<tcard_signal_sandbox::Child> child;
-    std::jthread worker; // Joined before releasing result fields or restoring Client access.
-};
-// Keep profile/runtime guards through the complete normal child lifetime.
-std::unique_ptr<tcard_signal_sandbox::Profile> g_signal_product;
-std::unique_ptr<tcard_signal_sandbox::Runtime> g_signal_runtime;
-std::unique_ptr<tcard_signal_sandbox::Child> g_signal_child;
-std::unique_ptr<SignalTask> g_signal_task; // Joins before global child/runtime/profile guards are released.
-std::wstring g_signal_pin;
-bool g_signal_close=false,g_signal_pending=false,g_signal_stop_pending=false;
-bool card_signal_available(){return !card_signal_busy()&&g_sync_client.SignalAvailable();}
-void card_signal_request(bool hosting){if(!g_main||(!hosting&&!g_signal_child&&!g_signal_task))return;g_signal_pending=true;g_signal_stop_pending=!hosting;
-    if(!SetTimer(g_main,kSignalTimer,500,nullptr)){g_signal_pending=false;g_signal_status=L"sync.signal_host_failed";return;}
-    PostMessageW(g_main,kSignalRequest,0,0);
-}
-void card_signal_restore(SignalTask& task)
-{
-    for(const auto& entry:task.windows)if(IsWindow(entry.hwnd)&&GetPropW(entry.hwnd,L"TCardSignal.Admission")==reinterpret_cast<HANDLE>(&task)){
-        RemovePropW(entry.hwnd,L"TCardSignal.Admission");EnableWindow(entry.hwnd,entry.enabled);
-    }
-}
-void card_signal_complete(HWND hwnd)
-{
-    if(!g_signal_task||!g_signal_task->done.load())return;
-    auto task=std::move(g_signal_task);if(task->worker.joinable())task->worker.join();
-    g_signal_child=std::move(task->child);g_signal_runtime=std::move(task->runtime);g_signal_product=std::move(task->product);g_signal_pin=task->hosting?task->pin:std::wstring();
-    card_signal_restore(*task);g_signal_admitting=false;
-    g_signal_status=task->okay?(task->hosting?L"sync.signal_host_running":std::wstring()):L"sync.signal_host_failed";
-    // Admission returns Client ownership; stop-only never borrowed it. Restart uses current persisted values.
-    try{if(task->stopped){const auto current=tcard_bridge::ReadSettings(preferences_path());
-        if(!tcard_bridge::ValidSettings(current)||!g_sync_client.Start(current))g_signal_status=L"sync.signal_host_failed";}
-    }catch(...){g_signal_status=L"sync.signal_host_failed";}
-    if(!task->okay)MessageBoxW(hwnd,tcard_text(L"sync.signal_host_failed",L"The signaling node could not start. Sync settings and local data were kept."),L"TCard",MB_OK|MB_ICONWARNING);
-    if(g_signal_close){g_signal_close=false;PostMessageW(hwnd,WM_CLOSE,0,0);}
-}
-void card_signal_reconcile(HWND hwnd)
-{
-    if(g_signal_task){g_signal_pending=true;return;}
-    // Modal settings own main-window enablement. Wait for them to close before taking a snapshot.
-    if(!IsWindowEnabled(hwnd)&&!g_signal_stop_pending){g_signal_pending=true;return;}
-    const auto settings=tcard_bridge::ReadSettings(preferences_path());
-    if(settings.hostSignal&&!IsWindowEnabled(hwnd)){g_signal_pending=true;g_signal_stop_pending=false;return;}g_signal_pending=false;
-    if(g_signal_child&&g_signal_child->Exited()){g_signal_child.reset();g_signal_runtime.reset();g_signal_product.reset();g_signal_pin.clear();g_signal_status=L"sync.signal_host_failed";}
-    if(!settings.hostSignal&&!g_signal_child)return;
-    if(settings.hostSignal&&g_signal_child&&g_signal_pin==settings.hostSignalPin)return;
-    if(settings.hostSignal&&(!card_signal_available()||!tcard_sync::sync_hex(settings.hostSignalPin))){
-        g_signal_status=L"sync.signal_host_failed";MessageBoxW(hwnd,tcard_text(L"sync.signal_host_failed",L"The signaling node could not start. Sync settings and local data were kept."),L"TCard",MB_OK|MB_ICONWARNING);return;
-    }
-    if(settings.hostSignal){
-    if(g_trash_task&&g_trash_task->done.load())g_trash_task.reset();
-    bool busy=g_editing||g_appearance_open||g_clip_job||g_trash_task||card_is_moving();
-    for(const auto& entry:g_card_windows){const HWND window=entry->handle&&g_get_card_window?g_get_card_window(entry->handle):nullptr;
-        if(entry->sizing||(window&&!IsWindowEnabled(window))||(entry->handle&&g_is_card_editing&&g_is_card_editing(entry->handle)))busy=true;
-    }
-    if(busy){g_signal_status=L"sync.signal_host_busy";MessageBoxW(hwnd,tcard_text(L"sync.signal_host_busy",L"Finish editing, image imports and cleanup, then save Sync settings again to start hosting."),L"TCard",MB_OK|MB_ICONINFORMATION);return;}
-    }
-    auto task=std::make_unique<SignalTask>();auto* state=task.get();state->pin=settings.hostSignalPin;state->stopOnly=!settings.hostSignal;
-    const auto executable=module_dir()+L"\\TCardSignal.exe",native=g_file_path,profile=g_sync_client.Profile();const bool hosting=settings.hostSignal;
-    try{
-        if(!SetTimer(hwnd,kSignalTimer,500,nullptr))throw std::runtime_error("Signal admission completion timer unavailable");
-        const auto pause=[&](HWND window){if(!window||!IsWindow(window))return;
-            state->windows.push_back({window,IsWindowEnabled(window)!=FALSE});
-            if(!SetPropW(window,L"TCardSignal.Admission",reinterpret_cast<HANDLE>(state)))throw std::runtime_error("Signal admission window identity failed");
-            EnableWindow(window,FALSE);
-        };
-        if(!state->stopOnly){pause(hwnd);for(const auto& entry:g_card_windows)pause(entry->handle&&g_get_card_window?g_get_card_window(entry->handle):nullptr);}
-        state->child=std::move(g_signal_child);state->runtime=std::move(g_signal_runtime);state->product=std::move(g_signal_product);g_signal_admitting=!state->stopOnly;if(state->stopOnly)g_signal_status=L"sync.signal_host_stopping";
-        state->worker=std::jthread([state,hwnd,executable,native,profile,hosting](std::stop_token stop){
-            try{
-                winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
-                if(state->child){state->child->Command('S');state->child->control.Reset();DWORD code=1;
-                    if(!state->child->Wait(code))throw std::runtime_error("Signal node normal stop pending");state->child.reset();state->runtime.reset();state->product.reset();}
-                if(stop.stop_requested())throw std::runtime_error("Signal admission cancelled");
-                // Saved Host OFF closes only the public node; editors, native writers and Sync keep running.
-                if(!state->stopOnly){if(!g_sync_client.Stop())throw std::runtime_error("Signal sync worker normal stop pending");state->stopped=true;}
-                if(hosting){
-                    if(!g_sync_client.PrepareSignalProtection(state->error,stop))throw std::runtime_error("Signal private protection refused");
-                    // Product is deliberately nonmovable; direct prvalue initialization uses guaranteed C++17 elision.
-                    state->product.reset(new tcard_signal_sandbox::Profile(tcard_signal_sandbox::Profile::Product()));
-                    const auto directory=state->product->Directory()+L"\\Signal\\"+state->pin;
-                    const auto config=GetFileAttributesW(tcard_native::Extended(directory+L"\\node-config.json").c_str());
-                    if(config==INVALID_FILE_ATTRIBUTES||(config&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)))throw std::runtime_error("Signal node provisioning unavailable");
-                    state->runtime=std::make_unique<tcard_signal_sandbox::Runtime>(*state->product,executable);
-                    state->child=std::make_unique<tcard_signal_sandbox::Child>();
-                    tcard_signal_sandbox::LaunchSignal(*state->child,*state->runtime,*state->product,directory,stop);
-                    if(stop.stop_requested()||!tcard_signal_protection::Check(native,profile,state->error)||!state->child->Command('G'))throw std::runtime_error("Signal GO admission refused");
-                    tcard_signal_sandbox::Packet packet{};bool received=false;const auto end=GetTickCount64()+tcard_signal_sandbox::waitMilliseconds;
-                    while(!stop.stop_requested()&&GetTickCount64()<end&&!state->child->Exited())if(tcard_signal_sandbox::ReadPacket(state->child->result.value,packet,50)){received=true;break;}
-                    if(stop.stop_requested()||!received||packet.kind!=tcard_signal_sandbox::resultPacket||packet.pid!=state->child->pid||!packet.code||packet.code>65535)
-                        throw std::runtime_error("Signal listener start refused");
-                    state->hosting=true;
-                }
-                if(stop.stop_requested())throw std::runtime_error("Signal admission cancelled");
-                state->okay=true;
-            }catch(...){
-                if(state->child){state->child->Command('S');state->child->control.Reset();DWORD code=1;if(state->child->Wait(code))state->child.reset();}
-                if(!state->child){state->runtime.reset();state->product.reset();}
-                state->okay=false;
-            }
-            state->done.store(true);PostMessageW(hwnd,kSignalComplete,0,0);
-        });
-        g_signal_task=std::move(task);
-    }catch(...){
-        g_signal_child=std::move(state->child);g_signal_runtime=std::move(state->runtime);g_signal_product=std::move(state->product);card_signal_restore(*state);g_signal_admitting=false;g_signal_status=L"sync.signal_host_failed";
-        MessageBoxW(hwnd,tcard_text(L"sync.signal_host_failed",L"The signaling node could not start. Sync settings and local data were kept."),L"TCard",MB_OK|MB_ICONWARNING);
-    }
-}
-void card_signal_shutdown()
-{
-    if(g_signal_task){g_signal_task->worker.request_stop();if(g_signal_task->worker.joinable())g_signal_task->worker.join();
-        g_signal_child=std::move(g_signal_task->child);g_signal_runtime=std::move(g_signal_task->runtime);g_signal_product=std::move(g_signal_task->product);card_signal_restore(*g_signal_task);g_signal_task.reset();g_signal_admitting=false;}
-    if(g_signal_child){g_signal_child->Command('S');g_signal_child->control.Reset();DWORD code=1;
-        if(g_signal_child->Wait(code)){g_signal_child.reset();g_signal_runtime.reset();g_signal_product.reset();}}
-}
-
 bool card_is_busy()
 {
     if(g_trash_task&&g_trash_task->done.load())g_trash_task.reset();
-    if(g_storage_locked||g_source_dialog||card_signal_busy()||g_signal_task||g_editing||g_appearance_open||g_clip_job||g_trash_task||card_is_moving())return true;
+    if(g_storage_locked||g_source_dialog||g_editing||g_appearance_open||g_clip_job||g_trash_task||card_is_moving())return true;
     for(const auto& entry:g_card_windows){const HWND window=entry->handle&&g_get_card_window?g_get_card_window(entry->handle):nullptr;
         if(entry->sizing||(window&&!IsWindowEnabled(window))||(entry->handle&&g_is_card_editing&&g_is_card_editing(entry->handle)))return true;
     }return false;
@@ -1545,7 +1408,7 @@ bool card_join_key(HWND owner,const std::wstring& words,std::wstring& display)
 }
 bool card_sync_start(HWND owner,const tcard_bridge::Settings& settings,bool startup)
 {
-    if(g_storage_locked||g_source_dialog||card_signal_busy())return false;
+    if(g_storage_locked||g_source_dialog)return false;
     static bool deferred=false;
     if(!settings.enabled||!g_sync_client.Available())return g_sync_client.Start(settings);
     if(deferred){g_sync_client.status=L"sync.storage_deferred";return false;}
@@ -1574,7 +1437,6 @@ bool card_sync_start(HWND owner,const tcard_bridge::Settings& settings,bool star
 
 void card_sync_poll(HWND hwnd)
 {
-    if(card_signal_busy())return;
     if(!IsWindowEnabled(hwnd)||g_appearance_open||g_clip_job)return;
     bool blocked=g_editing;
     for(const auto& entry:g_card_windows){
@@ -1650,8 +1512,6 @@ void refresh_language_ui(HWND hwnd)
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
-    case kSignalRequest:card_signal_reconcile(hwnd);return 0;
-    case kSignalComplete:card_signal_complete(hwnd);return 0;
     case kRendererClip:
         if (lParam) {
             auto* entry = reinterpret_cast<CardWindow*>(lParam);
@@ -1659,7 +1519,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     case kRendererSave:
-        if(g_storage_locked||card_signal_busy())return FALSE; // Keep the renderer draft; no false successful save.
+        if(g_storage_locked)return FALSE; // Keep the renderer draft; no false successful save.
         if (wParam) {
             auto* entry = reinterpret_cast<CardWindow*>(wParam);
             if (!card_window_live(entry)) return FALSE;
@@ -1709,7 +1569,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         SetForegroundWindow(hwnd);
         return 0;
     case kRendererEdit:
-        if(g_storage_locked||card_signal_busy())return FALSE;
+        if(g_storage_locked)return FALSE;
         if (g_editing) {
             MessageBoxW(g_main, tcard_text(L"message.finish_edit", L"Finish the current list edit before editing a standalone note."), tcard_lang::text(L"app.title", L"TCard").c_str(), MB_OK | MB_ICONINFORMATION);
             return 0;
@@ -1741,7 +1601,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_CONTEXTMENU:
-        if(g_storage_locked||card_signal_busy())return FALSE;
+        if(g_storage_locked)return FALSE;
         if (reinterpret_cast<HWND>(wParam) == g_list || reinterpret_cast<HWND>(wParam) == g_preview || reinterpret_cast<HWND>(wParam) == hwnd) {
             POINT point{ static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)) };
             if (point.x == -1 && point.y == -1) GetCursorPos(&point);
@@ -1776,7 +1636,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_CLOSE:
         if(g_key_active)return 0;
-        if(card_signal_busy()){g_signal_close=true;g_signal_task->worker.request_stop();return 0;}
         {
         if (g_editing) {
             const int choice = MessageBoxW(hwnd, tcard_text(L"message.save_changes", L"Save changes to this card?"), tcard_lang::text(L"app.title", L"TCard").c_str(), MB_ICONQUESTION | MB_YESNOCANCEL | MB_DEFBUTTON3);
@@ -1958,7 +1817,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             else if (g_storage_locked||!tcard_storage::Ready(g_file_path)) MessageBoxW(hwnd,tcard_text(L"storage.locked",L"Encrypted card storage is locked or migration is incomplete. Existing data has been preserved."),L"TCard",MB_OK|MB_ICONERROR);
         }
         if(syncPrepared&&cardsLoaded)g_sync_client.Start(syncSettings);
-        if(cardsLoaded)card_signal_request(syncSettings.hostSignal);
         SetTimer(hwnd,kSyncTimer,3000,nullptr);
         SetTimer(hwnd,kTrashTimer,60*1000,nullptr);
         fill_list();
@@ -2053,7 +1911,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_COMMAND:
         if(g_storage_locked)return FALSE;
-        if(card_signal_busy()){MessageBoxW(hwnd,tcard_text(L"sync.signal_host_busy",L"Finish editing, image imports and cleanup, then save Sync settings again to start hosting."),L"TCard",MB_OK|MB_ICONINFORMATION);return FALSE;}
         if(LOWORD(wParam)==kViewButton&&HIWORD(wParam)==BN_CLICKED){card_set_view(!g_trash_mode);return 0;}
         if(!lParam&&HIWORD(wParam)==0&&LOWORD(wParam)>=1306&&LOWORD(wParam)<=1309){
             const LRESULT index=selected_index();
@@ -2152,8 +2009,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_EXITSIZEMOVE:
         g_main_moving=false;card_resume_updates();return 0;
     case WM_TIMER:
-        if(wParam==kSignalTimer){card_signal_complete(hwnd);if(g_signal_pending&&!g_signal_task&&(IsWindowEnabled(hwnd)||g_signal_stop_pending))card_signal_reconcile(hwnd);if(!g_signal_task&&g_signal_child&&g_signal_child->Exited()){g_signal_child.reset();g_signal_runtime.reset();g_signal_product.reset();g_signal_pin.clear();g_signal_status=L"sync.signal_host_failed";}if(!g_signal_task&&!g_signal_child&&!g_signal_pending)KillTimer(hwnd,kSignalTimer);return 0;}
-        if(g_storage_locked||(card_signal_busy()&&wParam!=kSignalTimer))return 0;
+        if(g_storage_locked)return 0;
         // The modal move loop dispatches timers on this UI thread. Keep disk/import work out of it.
         // The separate sync worker and prepared IPC jobs continue; apply them after release.
         if((wParam==kTimer||wParam==kSyncTimer||wParam==kClipTimer)&&card_is_moving())return 0;
@@ -2181,7 +2037,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     case WM_DESTROY:
-        KillTimer(hwnd,kSignalTimer);card_signal_shutdown();
         KillTimer(hwnd,kTrashTimer);g_trash_task.reset();
         KillTimer(hwnd,kSyncTimer);
         g_sync_client.Stop();

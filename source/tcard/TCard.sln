@@ -20,8 +20,6 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tcard-sync", "sync\tcard-sy
         {70E0AF56-681F-445E-84E4-D78497A755D1} = {70E0AF56-681F-445E-84E4-D78497A755D1}
     EndProjectSection
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tcard-signal", "signaling\tcard-signal.vcxproj", "{C83D81CB-EA41-42C7-823A-4E24C77AC7FB}"
-EndProject
 Global
     GlobalSection(SolutionConfigurationPlatforms) = preSolution
         Release|x64 = Release|x64
@@ -37,8 +35,6 @@ Global
         {70E0AF56-681F-445E-84E4-D78497A755D1}.Release|x64.Build.0 = Release|x64
         {7C6B034E-9027-444F-B829-A45E540E7E89}.Release|x64.ActiveCfg = Release|x64
         {7C6B034E-9027-444F-B829-A45E540E7E89}.Release|x64.Build.0 = Release|x64
-        {C83D81CB-EA41-42C7-823A-4E24C77AC7FB}.Release|x64.ActiveCfg = Release|x64
-        {C83D81CB-EA41-42C7-823A-4E24C77AC7FB}.Release|x64.Build.0 = Release|x64
     EndGlobalSection
     GlobalSection(SolutionProperties) = preSolution
         HideSolutionNode = FALSE

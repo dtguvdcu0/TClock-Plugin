@@ -102,7 +102,7 @@ public:
 };
 std::unique_ptr<LoopbackListener> ListenLoopback(const std::wstring& storagePath,
     const Credentials& credentials,unsigned short port,std::wstring& error,std::shared_ptr<PeerApplication> application={},std::shared_ptr<PeerEvents> events={},std::shared_ptr<PeerConnections> connections={},std::shared_ptr<PeerSource> source={});
-// Addresses require explicit allow; off-link additionally requires remote admission. Deny always wins.
+// Addresses require local subnet membership and explicit allow. Deny always wins.
 bool DiscoverLan(tcard_net::Policy& policy,std::wstring& defaultWhitelist,std::wstring& error,std::vector<std::wstring>* addresses=nullptr);
 std::unique_ptr<LoopbackListener> ListenLan(const std::wstring& storagePath,
     const Credentials& credentials,unsigned short port,const tcard_net::Policy& policy,std::wstring& error,std::shared_ptr<PeerDiscovery> discovery={},std::shared_ptr<PeerApplication> application={},std::shared_ptr<PeerEvents> events={},std::shared_ptr<PeerConnections> connections={},std::shared_ptr<PeerSource> source={});

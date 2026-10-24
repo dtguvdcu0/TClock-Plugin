@@ -20,7 +20,6 @@
 #include "../core/card_sync_words.h"
 #include "../core/card_peer_discovery.h"
 #include "../core/card_connection_log.h"
-#include "../core/card_signal_client.h"
 #include "compat/card_sync_seed.h"
 #include "compat/card_sync_capture.h"
 
@@ -95,7 +94,7 @@ void sync_report(const Result& result)
 #include "card_source_completion.h"
 #include "card_source_job_service.h"
 
-int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned short listenPort,DWORD parentPid,bool server,const std::vector<tcard_net::Peer>& peers,const tcard_net::Policy& policy,bool lan,bool sharing,const std::vector<std::wstring>& localAddresses,const std::wstring& dependencyGroup,const tcard_signal_worker::Config& signaling)
+int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned short listenPort,DWORD parentPid,bool server,const std::vector<tcard_net::Peer>& peers,const tcard_net::Policy& policy,bool lan,bool sharing,const std::vector<std::wstring>& localAddresses,const std::wstring& dependencyGroup)
 {
     if(!parentPid||!listenPort)throw std::runtime_error("Invalid UI worker configuration");
     Handle parent(OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,parentPid));if(!parent.value)throw std::runtime_error("UI owner unavailable");
@@ -110,7 +109,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     Handle normalStop(CreateEventW(nullptr,FALSE,FALSE,sync_event(profile,L"Stop").c_str()));
     if(!stop.value||!normalStop.value)throw std::runtime_error("Cannot create UI stop events");
     auto connections=std::make_shared<PeerConnections>();
-    auto discovery=std::make_shared<tcard_peer::Discovery>(profile,policy,sharing,server?listenPort:static_cast<unsigned short>(0),localAddresses,signaling.enabled,[connections]{connections->Changed();});
+    auto discovery=std::make_shared<tcard_peer::Discovery>(profile,policy,sharing,server?listenPort:static_cast<unsigned short>(0),localAddresses,[connections]{connections->Changed();});
     std::shared_ptr<tcard_delivery::Journal> application;
     try{application=std::make_shared<tcard_delivery::Journal>(sync_storage(profile),mailbox,applicationOwner);}catch(...){/* ACK failure must preserve ordinary encrypted synchronization. */}
     auto events=std::make_shared<tcard_log::Log>(profile);
@@ -121,11 +120,9 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     HANDLE waits[]={stop.value,normalStop.value,parent.value};std::wstring accepted,observed,published;
     std::wstring reported;size_t reportedPending=0,ownerPending=0,reportedOwnerPending=0;
     bool ownerApplied=false,reportedOwnerApplied=false;ULONGLONG reportedAt=0; tcard_bridge::Stamp reportedStamp;
-    std::atomic<unsigned> signalPhase=signaling.enabled?1u:0u;std::atomic<bool> signalRegistered=false;
-    unsigned reportedSignalPhase=0;bool reportedSignalRegistered=false;
     auto report=[&](const wchar_t* phase,size_t pending){
-        const auto now=GetTickCount64();const auto signalState=signalPhase.load();const auto registered=signalRegistered.load();tcard_bridge::Stamp stamp;
-        if(reportedSignalPhase==signalState&&reportedSignalRegistered==registered&&reported==phase&&reportedPending==pending&&reportedOwnerPending==ownerPending&&reportedOwnerApplied==ownerApplied&&
+        const auto now=GetTickCount64();tcard_bridge::Stamp stamp;
+        if(reported==phase&&reportedPending==pending&&reportedOwnerPending==ownerPending&&reportedOwnerApplied==ownerApplied&&
             reportedAt&&now-reportedAt<60000&&tcard_bridge::Fingerprint(mailbox,L"status.json",stamp)&&stamp==reportedStamp)return true;
         JsonObject status;status.Insert(L"Pid",JsonValue::CreateNumberValue(GetCurrentProcessId()));
         status.Insert(L"Port",JsonValue::CreateNumberValue(listener?listener->Port():0));status.Insert(L"Status",JsonValue::CreateStringValue(phase));
@@ -138,13 +135,11 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         status.Insert(L"DependencySpace",JsonValue::CreateStringValue(dependencyGroup.empty()?L"":keys.space));
         status.Insert(L"DependencyGroup",JsonValue::CreateStringValue(dependencyGroup));status.Insert(L"DependencyNode",JsonValue::CreateStringValue(dependencyNode));
         status.Insert(L"DependencyWorker",JsonValue::CreateStringValue(workerOwner));status.Insert(L"DependencyOwner",JsonValue::CreateStringValue(applicationOwner));
-        status.Insert(L"SignalingEnabled",JsonValue::CreateBooleanValue(signaling.enabled));status.Insert(L"SignalingReady",JsonValue::CreateBooleanValue(signalState==2));
-        status.Insert(L"SignalingRegistered",JsonValue::CreateBooleanValue(registered));status.Insert(L"SignalingPhase",JsonValue::CreateNumberValue(signalState));
         status.Insert(L"OwnerApplied",JsonValue::CreateBooleanValue(ownerApplied));
         status.Insert(L"OwnerPending",JsonValue::CreateNumberValue(static_cast<double>(ownerPending)));
         // A transient external reader can deny rename; retain the worker and retry on the next poll.
         if(!tcard_bridge::Publish(mailbox,L"status.json",status.Stringify().c_str()))return false;
-        reported=phase;reportedPending=pending;reportedOwnerPending=ownerPending;reportedOwnerApplied=ownerApplied;reportedAt=now;reportedSignalPhase=signalState;reportedSignalRegistered=registered;tcard_bridge::Fingerprint(mailbox,L"status.json",reportedStamp);return true;
+        reported=phase;reportedPending=pending;reportedOwnerPending=ownerPending;reportedOwnerApplied=ownerApplied;reportedAt=now;tcard_bridge::Fingerprint(mailbox,L"status.json",reportedStamp);return true;
     };
     if(server&&!listener){
         for(;;){
@@ -164,18 +159,6 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 for(unsigned i=0;i<600&&!cancel.stop_requested();++i)std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         }catch(...){/* Completion is optional to local editing and ordinary synchronization. */}
-    });
-    // Node TLS has its own owned thread so broker outage cannot stall ordinary manual synchronization.
-    std::jthread signalingThread;
-    if(signaling.enabled)signalingThread=std::jthread([&](std::stop_token cancel){
-        try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
-            tcard_signal_worker::Client client(profile,keys,signaling,policy,listener!=nullptr);
-            while(!cancel.stop_requested()){bool registered=false;size_t accepted=0;bool okay=false;
-                try{okay=client.Step(*discovery,cancel,registered,accepted,connections->Healthy());}catch(...){/* Keep optional discovery failure separate from local edits and sync delivery. */}
-                signalRegistered=registered;signalPhase=okay?2u:3u;
-                for(unsigned i=0;i<20&&!cancel.stop_requested();++i)std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        }catch(...){signalPhase=3;signalRegistered=false;}
     });
     std::atomic<bool> peerFailed=false;std::atomic<size_t> peerPending=0;
     std::mutex checkMutex;std::wstring requested,finished;
@@ -386,8 +369,8 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         if(pending&&wcscmp(phase,L"sync.ready")==0)phase=L"sync.pending";
         report(phase,pending);
     }
-    sourceCompletion.request_stop();if(signalingThread.joinable())signalingThread.request_stop();if(exchanges.joinable())exchanges.request_stop();
-    sourceCompletion.join();if(signalingThread.joinable())signalingThread.join();if(exchanges.joinable())exchanges.join();if(listener)listener->Stop();events->Flush();return 0;
+    sourceCompletion.request_stop();if(exchanges.joinable())exchanges.request_stop();
+    sourceCompletion.join();if(exchanges.joinable())exchanges.join();if(listener)listener->Stop();events->Flush();return 0;
 }
 int sync_run(int argc,wchar_t** argv)
 {
@@ -398,7 +381,7 @@ int sync_run(int argc,wchar_t** argv)
     std::map<std::wstring,std::wstring> options;
     for(int i=2;i<argc;i+=2){
         if(i+1>=argc)throw std::runtime_error("Missing option value");const std::wstring key=argv[i];
-        if(key!=L"--profile"&&key!=L"--port"&&key!=L"--package"&&key!=L"--from-profile"&&key!=L"--listen-port"&&key!=L"--parent-pid"&&key!=L"--server"&&key!=L"--peers"&&key!=L"--whitelist"&&key!=L"--blacklist"&&key!=L"--request"&&key!=L"--storage-root"&&key!=L"--share-peers"&&key!=L"--remote-admission"&&key!=L"--signaling"&&key!=L"--signal-nodes"&&key!=L"--published-sync")throw std::runtime_error("Unknown sync option");
+        if(key!=L"--profile"&&key!=L"--port"&&key!=L"--package"&&key!=L"--from-profile"&&key!=L"--listen-port"&&key!=L"--parent-pid"&&key!=L"--server"&&key!=L"--peers"&&key!=L"--whitelist"&&key!=L"--blacklist"&&key!=L"--request"&&key!=L"--storage-root"&&key!=L"--share-peers")throw std::runtime_error("Unknown sync option");
         if(!options.emplace(key,argv[i+1]).second)throw std::runtime_error("Duplicate sync option");
     }
     if(!options.contains(L"--profile")||options.at(L"--profile").empty())throw std::runtime_error("Dedicated profile path is required");
@@ -431,23 +414,13 @@ int sync_run(int argc,wchar_t** argv)
         return sync_keys(profile,options.at(L"--request"),options.contains(L"--from-profile")?sync_absolute(options.at(L"--from-profile")):L"");
     }
     if(options.contains(L"--request"))throw std::runtime_error("Key request requires key-service");
-    tcard_signal_worker::Config signaling;
-    const bool signalOptions=options.contains(L"--signaling")||options.contains(L"--signal-nodes")||options.contains(L"--published-sync");
-    if(signalOptions){
-        if(command!=L"--ui"||!options.contains(L"--signaling"))throw std::runtime_error("Signaling options require UI worker mode");
-        const auto& enabled=options.at(L"--signaling");if(enabled!=L"0"&&enabled!=L"1")throw std::runtime_error("Invalid signaling option");signaling.enabled=enabled==L"1";
-        if(signaling.enabled){
-            if(!options.contains(L"--signal-nodes")||!tcard_bridge::ParseSignalNodes(options.at(L"--signal-nodes"),signaling.nodes)||signaling.nodes.empty())throw std::runtime_error("Pinned signaling nodes required");
-            if(options.contains(L"--published-sync")&&!tcard_bridge::ParsePublishedSyncEndpoint(options.at(L"--published-sync"),signaling.published))throw std::runtime_error("Invalid published synchronization endpoint");
-        }else if(options.contains(L"--signal-nodes")||options.contains(L"--published-sync"))throw std::runtime_error("Inactive signaling options");
-    }
     if(options.contains(L"--port")&&command!=L"--listen"&&command!=L"--exchange"&&command!=L"--ui")throw std::runtime_error("Port is only valid for listen/exchange");
     if(options.contains(L"--package")&&command!=L"--import"&&command!=L"--export")throw std::runtime_error("Package is only valid for import/export");
     if(options.contains(L"--from-profile")&&command!=L"--join"&&command!=L"--ui")throw std::runtime_error("Source profile is only valid for join");
     if((command==L"--import"||command==L"--export")&&!options.contains(L"--package"))throw std::runtime_error("Exchange file is required");
     if(command==L"--join"&&!options.contains(L"--from-profile"))throw std::runtime_error("Provisioning profile is required");
     if(command!=L"--ui"&&(options.contains(L"--listen-port")||options.contains(L"--parent-pid")))throw std::runtime_error("UI owner options require --ui");
-    const bool lan=options.contains(L"--remote-admission")||options.contains(L"--share-peers")||options.contains(L"--server")||options.contains(L"--peers")||options.contains(L"--whitelist")||options.contains(L"--blacklist");
+    const bool lan=options.contains(L"--share-peers")||options.contains(L"--server")||options.contains(L"--peers")||options.contains(L"--whitelist")||options.contains(L"--blacklist");
     if(lan&&command!=L"--ui")throw std::runtime_error("Network policy options require --ui");
     if(command==L"--network-info"){
         if(options.size()!=1)throw std::runtime_error("Network discovery requires only --profile output directory");
@@ -474,8 +447,6 @@ int sync_run(int argc,wchar_t** argv)
             if(!options.contains(L"--server")||!options.contains(L"--peers")||!options.contains(L"--whitelist")||!options.contains(L"--blacklist")||
                 (options.at(L"--server")!=L"0"&&options.at(L"--server")!=L"1"))throw std::runtime_error("Incomplete network policy");
             server=options.at(L"--server")==L"1";std::wstring seed;
-            if(options.contains(L"--remote-admission")){const auto& value=options.at(L"--remote-admission");
-                if(value!=L"0"&&value!=L"1")throw std::runtime_error("Invalid remote admission option");policy.remoteAdmission=value==L"1";}
             if(options.contains(L"--share-peers")){const auto& value=options.at(L"--share-peers");if(value!=L"0"&&value!=L"1")throw std::runtime_error("Invalid discovery option");sharing=value==L"1";}
             if(!DiscoverLan(policy,seed,error,&localAddresses)||!tcard_net::ParseRules(options.at(L"--whitelist"),policy.allow)||!tcard_net::ParseRules(options.at(L"--blacklist"),policy.deny)||
                 !tcard_net::ParsePeers(options.at(L"--peers"),port?port:listenPort,peers))throw std::runtime_error("Invalid IP policy");
@@ -516,7 +487,7 @@ int sync_run(int argc,wchar_t** argv)
             throw std::runtime_error("Encrypted storage admission failed");
         if(tcard_storage::Matches(storage,derived)&&tcard_storage::Matches(profile,derived))dependencyGroup=tcard_ack::Identity(derived);
     }
-    if(command==L"--ui")return sync_worker(profile,keys.value,listenPort,parentPid,server,peers,policy,lan,sharing,localAddresses,dependencyGroup,signaling);
+    if(command==L"--ui")return sync_worker(profile,keys.value,listenPort,parentPid,server,peers,policy,lan,sharing,localAddresses,dependencyGroup);
     if(command==L"--listen"){
         Handle owner(CreateMutexW(nullptr,TRUE,sync_event(profile,L"Owner").c_str()));
         if(!owner.value||GetLastError()==ERROR_ALREADY_EXISTS)throw std::runtime_error("Sync worker already running or unavailable");

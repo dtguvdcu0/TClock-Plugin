@@ -75,15 +75,6 @@ function Assert-SyncArtifactIdle {
     }
 }
 
-# A running optional node must close normally; builds never terminate it.
-foreach ($signalProcess in @(Get-Process -Name TCardSignal -ErrorAction SilentlyContinue)) {
-    if ($signalProcess.Threads.Count -eq 0) { continue }
-    $signalPath = $signalProcess.MainModule.FileName
-    if (-not $signalPath) { throw "Cannot verify Signal executable path for PID $($signalProcess.Id)." }
-    if ([IO.Path]::GetFullPath($signalPath) -eq [IO.Path]::GetFullPath((Join-Path $buildRoot 'plugins\TCardSignal.exe'))) {
-        throw "TCardSignal PID $($signalProcess.Id) owns this build artifact. Stop its owned launcher normally first."
-    }
-}
 Assert-SyncArtifactIdle
 Stop-TCardForBuild
 
@@ -99,8 +90,6 @@ if (Test-Path -LiteralPath $languageSource) {
     }
 }
 
-$signalArtifact = Join-Path $buildRoot 'plugins\TCardSignal.exe'
-if (-not (Test-Path -LiteralPath $signalArtifact)) { throw 'Optional-distribution TCardSignal executable was not built.' }
 $syncArtifact = Join-Path $buildRoot 'plugins\TCardSync.exe'
 if (-not (Test-Path -LiteralPath $syncArtifact)) { throw 'TCardSync executable was not built.' }
 $icon = Join-Path $tcardRoot 'icon3.ico'

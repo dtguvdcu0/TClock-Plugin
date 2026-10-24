@@ -527,33 +527,6 @@ bool WithDependencyCommit(const std::wstring& storage,const std::wstring& custod
         if(!cleanup(proof)){result.error=L"Committed duplicate cleanup remains incomplete";return false;}return true;
     }catch(const std::exception& error){result.error.assign(error.what(),error.what()+strlen(error.what()));return false;}catch(...){result.error=L"Committed duplicate cleanup failed";return false;}
 }
-bool WithSignalProtection(const std::wstring& nativeRoot,const std::wstring& profileRoot,const std::function<bool()>& protect,Result& result)
-{
-    result={};try{
-        if(nativeRoot.empty()||profileRoot.empty()||!protect)throw std::runtime_error("Signal protection boundary unavailable");
-        std::unique_lock<std::recursive_mutex> process(sync_mutex);
-        const auto native=sync_path_plain(tcard_native::Base(nativeRoot)),profile=sync_path_plain(profileRoot),control=profile+L"-control";
-        if(native.empty()||profile.empty())throw std::runtime_error("Signal protection roots unavailable");
-        const auto paths=[&]{return std::set<std::wstring>{sync_owner(native),tcard_chunks::budget::Owner(native),
-            sync_owner(profile),tcard_chunks::budget::Owner(profile),sync_owner(control)};};
-        const auto expected=paths();std::vector<std::unique_ptr<SyncLock>> owners;
-        for(const auto& path:expected){if(path.empty())throw std::runtime_error("Signal protection owner unavailable");
-            auto lock=std::make_unique<SyncLock>(path);if(!*lock)throw std::runtime_error("Signal protection owner busy");owners.push_back(std::move(lock));}
-        // Noncreate handles refuse reparse/aliases and prevent stable roots being renamed during the callback.
-        std::set<std::wstring> directories=expected;directories.insert(native);directories.insert(profile);
-        const auto flags=GetFileAttributesW(tcard_native::Extended(control).c_str());
-        if(flags==INVALID_FILE_ATTRIBUTES){const auto error=GetLastError();
-            if(error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)throw std::runtime_error("Signal control path unavailable");
-            directories.erase(sync_owner(control));const auto slash=control.find_last_of(L'\\');
-            if(slash==std::wstring::npos)throw std::runtime_error("Signal control parent unavailable");directories.insert(control.substr(0,slash));}
-        std::vector<std::unique_ptr<tcard_asset::File>> roots;
-        for(const auto& path:directories){auto root=std::make_unique<tcard_asset::File>(tcard_asset::open_dir(tcard_native::Extended(path),false));
-            if(!*root)throw std::runtime_error("Signal stable root unavailable");roots.push_back(std::move(root));}
-        if(paths()!=expected)throw std::runtime_error("Signal protection owner changed");
-        if(!protect()){result.error=L"Signal protection remains incomplete";return false;}return true;
-    }catch(const std::exception& error){result.error.assign(error.what(),error.what()+strlen(error.what()));return false;}
-    catch(...){result.error=L"Signal protection boundary failed";return false;}
-}
 bool RetryChanges(const std::wstring& storagePath,Result& result)
 {
     result={};std::lock_guard guard(sync_mutex);

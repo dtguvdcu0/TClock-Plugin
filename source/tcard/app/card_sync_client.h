@@ -6,7 +6,6 @@
 #include "../core/card_source_candidate.h"
 #include "../core/card_native_receive.h"
 #include "../core/card_sync_network.h"
-#include "../core/card_signal_protection.h"
 #include <winrt/Windows.Data.Json.h>
 #include <thread>
 #include <atomic>
@@ -16,9 +15,7 @@ struct Settings {
     bool enabled=false;
     unsigned listenPort=49021,peerPort=0;
     std::wstring joinProfile,peers,whitelist=L"127.0.0.1/32",blacklist;
-    bool server=true,hasPolicy=false,sharePeers=false,remoteAdmission=false;
-    bool signaling=false,hostSignal=false;
-    std::wstring signalNodes,publishedSyncEndpoint,hostSignalPin;
+    bool server=true,hasPolicy=false,sharePeers=false;
 };
 inline Settings ReadSettings(const std::wstring& ini)
 {
@@ -30,9 +27,6 @@ inline Settings ReadSettings(const std::wstring& ini)
     settings.server=true;
     settings.sharePeers=GetPrivateProfileIntW(L"TCardSync",L"SharePeers",0,ini.c_str())!=0;
     auto read=[&](const wchar_t* key,const wchar_t* fallback){wchar_t value[8192]{};GetPrivateProfileStringW(L"TCardSync",key,fallback,value,8192,ini.c_str());return std::wstring(value);};
-    settings.remoteAdmission=read(L"RemoteAdmission",L"0")==L"1";
-    settings.signaling=read(L"Signaling",L"0")==L"1";settings.hostSignal=read(L"HostSignal",L"0")==L"1";
-    settings.signalNodes=read(L"SignalNodes",L"");settings.publishedSyncEndpoint=read(L"PublishedSyncEndpoint",L"");settings.hostSignalPin=read(L"HostSignalPin",L"");
     settings.peers=read(L"Peers",L"");settings.blacklist=read(L"Blacklist",L"");
     settings.whitelist=read(L"Whitelist",L"@unset");settings.hasPolicy=settings.whitelist!=L"@unset";
     if(!settings.hasPolicy)settings.whitelist=L"127.0.0.1/32";
@@ -46,12 +40,6 @@ inline bool ValidSettings(const Settings& settings)
         !tcard_net::ParsePeers(settings.peers,settings.peerPort?settings.peerPort:settings.listenPort,peers))return false;
     if(!settings.hasPolicy&&settings.peers.empty()&&settings.peerPort==settings.listenPort)return false;
     for(const auto& peer:peers)if((peer.address>>24)==127&&settings.server&&peer.port==settings.listenPort)return false;
-    if(settings.signalNodes.size()>8192||settings.publishedSyncEndpoint.size()>32||
-        settings.signalNodes.find_first_of(L"\r\n")!=std::wstring::npos||settings.publishedSyncEndpoint.find_first_of(L"\r\n")!=std::wstring::npos)return false;
-    if(settings.hostSignalPin.size()>64||settings.hostSignalPin.find_first_of(L"\r\n")!=std::wstring::npos)return false;
-    if(settings.hostSignal&&!tcard_sync::sync_hex(settings.hostSignalPin))return false;
-    if(settings.enabled&&settings.signaling){std::vector<SignalNode> nodes;tcard_net::Peer published;
-        if(!ParseSignalNodes(settings.signalNodes,nodes)||nodes.empty()||!ParsePublishedSyncEndpoint(settings.publishedSyncEndpoint,published))return false;}
     return true;
 }
 // Edit-only normalization preserves legacy effective ports and provisioning settings.
@@ -88,8 +76,7 @@ inline bool SaveSettings(const std::wstring& ini,const Settings& settings)
     if(length>=section.size()-2)return false;std::wstring values;
     for(const wchar_t* item=section.data();*item;item+=wcslen(item)+1){
         if(_wcsnicmp(item,L"Enabled=",8)==0||_wcsnicmp(item,L"ListenPort=",11)==0||_wcsnicmp(item,L"PeerPort=",9)==0||_wcsnicmp(item,L"JoinProfile=",12)==0||
-            _wcsnicmp(item,L"Signaling=",10)==0||_wcsnicmp(item,L"HostSignal=",11)==0||_wcsnicmp(item,L"HostSignalPin=",14)==0||_wcsnicmp(item,L"SignalNodes=",12)==0||_wcsnicmp(item,L"PublishedSyncEndpoint=",22)==0||
-            _wcsnicmp(item,L"RemoteAdmission=",16)==0||_wcsnicmp(item,L"SharePeers=",11)==0||_wcsnicmp(item,L"ServerMode=",11)==0||_wcsnicmp(item,L"Peers=",6)==0||_wcsnicmp(item,L"Whitelist=",10)==0||_wcsnicmp(item,L"Blacklist=",10)==0)continue;
+            _wcsnicmp(item,L"SharePeers=",11)==0||_wcsnicmp(item,L"ServerMode=",11)==0||_wcsnicmp(item,L"Peers=",6)==0||_wcsnicmp(item,L"Whitelist=",10)==0||_wcsnicmp(item,L"Blacklist=",10)==0)continue;
         values+=item;values.push_back(L'\0');
     }
     auto add=[&](const std::wstring& item){values+=item;values.push_back(L'\0');};
@@ -97,9 +84,6 @@ inline bool SaveSettings(const std::wstring& ini,const Settings& settings)
     add(L"PeerPort="+std::to_wstring(settings.peerPort));add(L"JoinProfile="+settings.joinProfile);
     add(L"ServerMode=1");
     add(std::wstring(L"SharePeers=")+(settings.sharePeers?L"1":L"0"));
-    add(std::wstring(L"RemoteAdmission=")+(settings.remoteAdmission?L"1":L"0"));
-    add(std::wstring(L"Signaling=")+(settings.signaling?L"1":L"0"));add(std::wstring(L"HostSignal=")+(settings.hostSignal?L"1":L"0"));
-    add(L"SignalNodes="+settings.signalNodes);add(L"PublishedSyncEndpoint="+settings.publishedSyncEndpoint);add(L"HostSignalPin="+settings.hostSignalPin);
     // Preserve legacy callers that expressed their single loopback peer only by PeerPort.
     add(L"Peers="+(!settings.hasPolicy&&settings.peers.empty()&&settings.peerPort?L"127.0.0.1":tcard_net::Flatten(settings.peers)));
     add(L"Whitelist="+tcard_net::Flatten(settings.whitelist));add(L"Blacklist="+tcard_net::Flatten(settings.blacklist));values.push_back(L'\0');
@@ -210,7 +194,6 @@ public:
     std::wstring status=L"sync.off";
     ~Client(){if(changes_!=INVALID_HANDLE_VALUE)FindCloseChangeNotification(changes_);Stop();if(control_){WaitForSingleObject(control_,15000);CloseHandle(control_);}}
     bool Available()const{return tcard_bridge::Available(directory_+L"\\TCardSync.exe");}
-    bool SignalAvailable()const{return Available()&&tcard_bridge::Available(directory_+L"\\TCardSignal.exe");}
     DWORD Pid()const{return pid_;}
     void SetDirectory(const std::wstring& directory){directory_=directory;profile_=directory+L"\\tcard\\sync";}
     const std::wstring& Profile()const{return profile_;}
@@ -399,7 +382,7 @@ public:
             using namespace tcard_source_job;tcard_crypto::Keys previous;
             Require(!storage_.empty()&&tcard_storage::Required(storage_)&&tcard_storage::LoadKey(storage_,previous)&&tcard_storage::Matches(profile_,previous)&&!tcard_activation::Pending(profile_),"Acquisition requires encrypted owner roots");
             Require(tcard_bridge::Protect(Control(profile_)),"Acquisition control unavailable");const auto token=Hash(Token());JsonObject record;
-            record.Insert(L"Version",JsonValue::CreateNumberValue(1));record.Insert(L"Remote",JsonValue::CreateBooleanValue(settings.remoteAdmission));
+            record.Insert(L"Version",JsonValue::CreateNumberValue(1));record.Insert(L"Remote",JsonValue::CreateBooleanValue(false));
             for(const auto& [key,value]:std::vector<std::pair<std::wstring,std::wstring>>{{L"Kind",L"replace-source-intent"},{L"Profile",sync_path_plain(profile_)},{L"Job",token},{L"Previous",tcard_ack::Identity(previous)},
                 {L"Endpoint",endpoint},{L"Allow",settings.whitelist},{L"Deny",settings.blacklist},{L"Words",words}})record.Insert(key,JsonValue::CreateStringValue(value));
             Require(Put(profile_,token+L".intent",record),"Cannot retain acquisition intent");Intent checked;ReadIntent(profile_,token,checked);
@@ -463,9 +446,7 @@ public:
             !settings.hasPolicy&&settings.peers.empty()&&settings.peerPort?L"127.0.0.1":tcard_net::Flatten(settings.peers),
             L"--whitelist",tcard_net::Flatten(settings.whitelist),L"--blacklist",tcard_net::Flatten(settings.blacklist)});
         // Omit the new option when OFF so older optional workers retain their existing LAN command line.
-        if(settings.remoteAdmission)arguments.insert(arguments.end(),{L"--remote-admission",L"1"});
         // OFF omits all new options, preserving older optional workers and remembered node configuration.
-        if(settings.signaling)arguments.insert(arguments.end(),{L"--signaling",L"1",L"--signal-nodes",tcard_net::Flatten(settings.signalNodes),L"--published-sync",settings.publishedSyncEndpoint});
         if(!storage_.empty())arguments.insert(arguments.end(),{L"--storage-root",storage_});
         if(!settings.joinProfile.empty())arguments.insert(arguments.end(),{L"--from-profile",settings.joinProfile});
         process_=Launch(directory_+L"\\TCardSync.exe",arguments,pid_);sent_.clear();received_.clear();
@@ -486,20 +467,6 @@ public:
             if(WaitForSingleObject(process_,15000)!=WAIT_OBJECT_0){status=L"sync.stopping";return false;}
         }
         CloseHandle(process_);process_=nullptr;pid_=0;status=L"sync.off";return true;
-    }
-    // Background-only explicit admission. Caller owns this Client exclusively and quiesces UI/native writers.
-    // This does not launch Signal or change remembered sync settings; the future launcher must Check before GO.
-    bool PrepareSignalProtection(std::wstring& error,std::stop_token stop={})
-    {
-        error.clear();try{
-            winrt::init_apartment(winrt::apartment_type::multi_threaded);
-            struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
-            if(stop.stop_requested()){error=L"Signal protection interrupted";return false;}
-            if(storage_.empty()||!Encrypted()){error=L"Signal protection requires admitted native storage";return false;}
-            if(control_&&WaitForSingleObject(control_,0)!=WAIT_OBJECT_0){error=L"Signal key service is busy";return false;}
-            if(!Stop()){error=L"Signal worker did not stop normally";return false;}
-            return tcard_signal_protection::Prepare(storage_,profile_,stop,error);
-        }catch(...){error=L"Signal protection preparation failed";return false;}
     }
     bool Ready()
     {

@@ -1,0 +1,8 @@
+{
+  "project": "python-mnemonic English word list",
+  "git": "https://github.com/trezor/python-mnemonic.git",
+  "revision": "b57a5ad77a981e743f4167ab2f7927a55c1e82a8",
+  "wordlist_sha256": "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda",
+  "selection": "Fixed recovery identity word list; acquire only when generated header and local source are absent",
+  "license": "MIT"
+}

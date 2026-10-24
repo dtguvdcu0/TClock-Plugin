@@ -4,7 +4,6 @@
 
 std::wstring card_sync_label()
 {
-    if(card_signal_busy())return tcard_text(L"sync.signal_host_preparing",L"Preparing protected signaling hosting...");
     const auto& key=g_sync_client.status;
     const wchar_t* fallback=L"Synchronization failed. Check the settings.";
     if(key==L"sync.off")fallback=L"Synchronization is off.";
@@ -17,72 +16,10 @@ std::wstring card_sync_label()
     else if(key==L"sync.port_busy")fallback=L"Cannot bind the selected port. Change it or close its owner.";
     else if(key==L"sync.stopping")fallback=L"Waiting for synchronization to stop.";
     std::wstring text=tcard_text(key.c_str(),fallback);
-    if(!g_signal_status.empty()){
-        const wchar_t* signal=g_signal_status==L"sync.signal_host_running"?L"Signaling node is running.":
-            g_signal_status==L"sync.signal_host_stopping"?L"Waiting for the signaling node to stop.":
-            g_signal_status==L"sync.signal_host_busy"?L"Finish editing, image imports and cleanup, then save Sync settings again to start hosting.":
-            L"The signaling node could not start. Sync settings and local data were kept.";
-        text+=L"\r\n"+std::wstring(tcard_text(g_signal_status.c_str(),signal));
-    }
     return text;
 }
 
 #include "card_source_dialog.h"
-
-// Edit public node metadata as part of this existing Sync settings transaction.
-INT_PTR CALLBACK card_signal_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
-{
-    if(const INT_PTR painted=tcard_ui::paint_settings(hwnd,message,wp,lp))return painted;
-    if(message==WM_INITDIALOG){
-        auto* settings=reinterpret_cast<tcard_bridge::Settings*>(lp);if(!settings){EndDialog(hwnd,IDCANCEL);return TRUE;}
-        SetPropW(hwnd,L"TCardSync.SignalEdit",reinterpret_cast<HANDLE>(settings));
-        SetWindowTextW(hwnd,tcard_text(L"sync.signaling",L"Signaling..."));const auto font=SendMessageW(hwnd,WM_GETFONT,0,0);
-        const auto control=[&](const wchar_t* cls,const wchar_t* text,DWORD style,int id,int x,int y,int width,int height){
-            RECT rect{x,y,x+width,y+height};MapDialogRect(hwnd,&rect);
-            const auto child=CreateWindowExW(wcscmp(cls,L"EDIT")==0?WS_EX_CLIENTEDGE:0,cls,text,WS_CHILD|WS_VISIBLE|style,
-                rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,hwnd,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),GetModuleHandleW(nullptr),nullptr);
-            SendMessageW(child,WM_SETFONT,font,TRUE);
-        };
-        control(L"BUTTON",tcard_text(L"sync.signal_enable",L"Find peers through signaling nodes"),WS_TABSTOP|BS_AUTOCHECKBOX,1740,8,8,304,14);
-        CheckDlgButton(hwnd,1740,settings->signaling?BST_CHECKED:BST_UNCHECKED);
-        control(L"STATIC",tcard_text(L"sync.signal_nodes",L"Nodes (IPv4:port@SHA-256 certificate pin)"),0,1741,8,28,304,12);
-        control(L"EDIT",settings->signalNodes.c_str(),WS_TABSTOP|ES_MULTILINE|ES_AUTOVSCROLL|WS_VSCROLL,1742,8,44,304,32);
-        control(L"STATIC",tcard_text(L"sync.signal_publish",L"Published sync endpoint (optional IPv4:port)"),0,1743,8,84,304,12);
-        control(L"EDIT",settings->publishedSyncEndpoint.c_str(),WS_TABSTOP|ES_AUTOHSCROLL,1744,8,100,304,14);
-        control(L"STATIC",tcard_text(L"sync.signal_scope",L"Existing IP rules and sync authentication apply. Save Sync settings to activate changes."),0,1745,8,120,304,24);
-        const bool hosting=card_signal_available();
-        control(L"BUTTON",tcard_text(L"sync.signal_host",L"Host a signaling node on this device"),WS_TABSTOP|BS_AUTOCHECKBOX,1746,8,148,304,14);
-        CheckDlgButton(hwnd,1746,settings->hostSignal?BST_CHECKED:BST_UNCHECKED);EnableWindow(GetDlgItem(hwnd,1746),hosting);
-        control(L"STATIC",tcard_text(L"sync.signal_host_pin",L"This node's SHA-256 certificate pin"),0,1747,8,168,304,12);
-        control(L"EDIT",settings->hostSignalPin.c_str(),WS_TABSTOP|ES_AUTOHSCROLL,1748,8,184,304,14);EnableWindow(GetDlgItem(hwnd,1748),hosting);
-        SendDlgItemMessageW(hwnd,1748,EM_SETLIMITTEXT,64,0);
-        control(L"BUTTON",tcard_text(L"button.save",L"Save"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,204,216,52,16);
-        control(L"BUTTON",tcard_text(L"button.cancel",L"Cancel"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,260,216,52,16);
-        SendDlgItemMessageW(hwnd,1742,EM_SETLIMITTEXT,8191,0);SendDlgItemMessageW(hwnd,1744,EM_SETLIMITTEXT,32,0);tcard_ui::prepare_settings(hwnd);return TRUE;
-    }
-    if(message==WM_COMMAND){
-        if(LOWORD(wp)==IDCANCEL){EndDialog(hwnd,IDCANCEL);return TRUE;}
-        if(LOWORD(wp)==IDOK){auto* settings=reinterpret_cast<tcard_bridge::Settings*>(GetPropW(hwnd,L"TCardSync.SignalEdit"));if(!settings){EndDialog(hwnd,IDCANCEL);return TRUE;}
-            auto edited=*settings;edited.signaling=IsDlgButtonChecked(hwnd,1740)==BST_CHECKED;
-            edited.signalNodes=tcard_net::Flatten(window_text(GetDlgItem(hwnd,1742)));edited.publishedSyncEndpoint=window_text(GetDlgItem(hwnd,1744));
-            if(card_signal_available()){edited.hostSignal=IsDlgButtonChecked(hwnd,1746)==BST_CHECKED;edited.hostSignalPin=window_text(GetDlgItem(hwnd,1748));}
-            if(edited.hostSignal&&!tcard_sync::sync_hex(edited.hostSignalPin)){MessageBoxW(hwnd,tcard_text(L"sync.signal_host_failed",L"The signaling node could not start. Sync settings and local data were kept."),L"TCard",MB_OK|MB_ICONWARNING);return TRUE;}
-            std::vector<tcard_bridge::SignalNode> nodes;tcard_net::Peer published;
-            if(edited.signaling&&(!tcard_bridge::ParseSignalNodes(edited.signalNodes,nodes)||nodes.empty()||!tcard_bridge::ParsePublishedSyncEndpoint(edited.publishedSyncEndpoint,published))){
-                MessageBoxW(hwnd,tcard_text(L"sync.signal_invalid",L"Enter pinned nodes and an optional published sync endpoint."),L"TCard",MB_OK|MB_ICONWARNING);return TRUE;}
-            *settings=std::move(edited);EndDialog(hwnd,IDOK);return TRUE;
-        }
-    }
-    if(message==WM_DESTROY)RemovePropW(hwnd,L"TCardSync.SignalEdit");return FALSE;
-}
-void card_show_signal_settings(HWND owner,tcard_bridge::Settings& settings)
-{
-    DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;dialog.cx=320;dialog.cy=240;
-    std::vector<BYTE> data(sizeof(dialog));memcpy(data.data(),&dialog,sizeof(dialog));
-    const auto append=[&](WORD word){data.push_back(static_cast<BYTE>(word));data.push_back(static_cast<BYTE>(word>>8));};
-    append(0);append(0);append(0);append(10);for(wchar_t c:std::wstring(L"Segoe UI"))append(c);append(0);
-    auto draft=settings;if(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(data.data()),owner,card_signal_settings_proc,reinterpret_cast<LPARAM>(&draft))==IDOK)settings=std::move(draft);
-}
 
 // Completion-driven allow rules stay in the dialog draft until Save.
 void card_sync_allow(HWND hwnd)
@@ -125,7 +62,7 @@ void card_wrap_path(HWND hwnd)
 }
 void card_sync_layout(HWND hwnd)
 {
-    card_wrap_path(hwnd);int y=144;
+    card_wrap_path(hwnd);int y=120;
     for(const auto& row:{std::pair<int,int>{1716,1717},{1718,1719}}){
         const bool open=GetPropW(hwnd,row.first==1716?L"TCardSync.WhiteOpen":L"TCardSync.BlackOpen")!=nullptr;
         const auto move=[&](int id,int top,int height){RECT rect{8,top,312,top+height};MapDialogRect(hwnd,&rect);SetWindowPos(GetDlgItem(hwnd,id),nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOZORDER|SWP_NOACTIVATE);};
@@ -159,19 +96,16 @@ void card_copy_folder(HWND hwnd)
 }
 bool card_sync_save(HWND hwnd)
 {
-    if(card_signal_busy()){MessageBoxW(hwnd,tcard_text(L"sync.signal_host_busy",L"Finish editing, image imports and cleanup, then save Sync settings again to start hosting."),L"TCard",MB_OK|MB_ICONINFORMATION);return false;}
     if(!g_sync_client.Available()){
         MessageBoxW(hwnd,tcard_text(L"sync.unavailable",L"Place TCardSync.exe beside TCard.exe."),L"TCard",MB_OK|MB_ICONERROR);return false;
     }
     tcard_bridge::Settings settings=tcard_bridge::ReadSettings(preferences_path());
-    if(const auto draft=reinterpret_cast<const tcard_bridge::Settings*>(GetPropW(hwnd,L"TCardSync.SignalDraft"))){settings.signaling=draft->signaling;settings.signalNodes=draft->signalNodes;settings.publishedSyncEndpoint=draft->publishedSyncEndpoint;settings.hostSignal=draft->hostSignal;settings.hostSignalPin=draft->hostSignalPin;}
     settings.enabled=IsDlgButtonChecked(hwnd,1701)==BST_CHECKED;
     card_sync_allow(hwnd);
     BOOL listen=FALSE;settings.listenPort=GetDlgItemInt(hwnd,1703,&listen,FALSE);settings.peerPort=0;
     // The hidden legacy provisioning value is retained; synchronization owns its listener.
     settings.hasPolicy=true;settings.server=true;
     settings.sharePeers=IsDlgButtonChecked(hwnd,1733)==BST_CHECKED;
-    settings.remoteAdmission=IsDlgButtonChecked(hwnd,1734)==BST_CHECKED;
     settings.peers=tcard_net::Flatten(window_text(GetDlgItem(hwnd,1715)));
     settings.whitelist=tcard_net::Flatten(window_text(GetDlgItem(hwnd,1717)));
     settings.blacklist=tcard_net::Flatten(window_text(GetDlgItem(hwnd,1719)));
@@ -180,7 +114,7 @@ bool card_sync_save(HWND hwnd)
     }
     const auto previous=tcard_bridge::ReadSettings(preferences_path());
     const bool changed=previous.enabled!=settings.enabled||previous.listenPort!=settings.listenPort||previous.peerPort!=settings.peerPort||previous.joinProfile!=settings.joinProfile||previous.server!=settings.server||previous.peers!=settings.peers||
-        previous.remoteAdmission!=settings.remoteAdmission||previous.sharePeers!=settings.sharePeers||previous.signaling!=settings.signaling||previous.signalNodes!=settings.signalNodes||previous.publishedSyncEndpoint!=settings.publishedSyncEndpoint||previous.whitelist!=settings.whitelist||previous.blacklist!=settings.blacklist||!previous.hasPolicy;
+        previous.sharePeers!=settings.sharePeers||previous.whitelist!=settings.whitelist||previous.blacklist!=settings.blacklist||!previous.hasPolicy;
     if(changed&&!g_sync_client.Stop()){
         MessageBoxW(hwnd,card_sync_label().c_str(),L"TCard",MB_OK|MB_ICONWARNING);return false;
     }
@@ -189,7 +123,7 @@ bool card_sync_save(HWND hwnd)
         MessageBoxW(hwnd,tcard_text(L"settings.save_failed",L"Could not save settings."),L"TCard",MB_OK|MB_ICONERROR);return false;
     }
     if(changed||(settings.enabled&&!g_sync_client.Running()))card_sync_start(hwnd,settings);
-    card_signal_request(settings.hostSignal);return true;
+    return true;
 
 }
 INT_PTR CALLBACK card_join_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
@@ -248,7 +182,7 @@ INT_PTR CALLBACK card_key_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     }
     if(message==WM_COMMAND){
         const int id=LOWORD(wp);if(id==IDCANCEL){EndDialog(hwnd,IDCANCEL);return TRUE;}
-        if(card_signal_busy()||g_source_dialog)return TRUE;
+        if(g_source_dialog)return TRUE;
         if(id==1726||id==1727){
             auto words=window_text(GetDlgItem(hwnd,1724));std::wstring display;const auto settings=tcard_bridge::ReadSettings(preferences_path());
             bool okay=false;std::wstring failure;
@@ -276,7 +210,6 @@ INT_PTR CALLBACK card_key_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 }
 void card_show_keys(HWND owner)
 {
-    if(card_signal_busy())return;
     const auto settings=tcard_bridge::ReadSettings(preferences_path());std::wstring display,failure;bool okay=false;
     try{okay=g_sync_client.Key(L"show",L"",display,settings.joinProfile);failure=g_sync_client.status;}catch(...){failure=L"sync.key_failed";}
     if(settings.enabled)card_sync_start(owner,settings);
@@ -344,7 +277,6 @@ INT_PTR CALLBACK card_handle_peers(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     }
     if(message==WM_COMMAND){
         if(LOWORD(wp)==IDOK||LOWORD(wp)==IDCANCEL){EndDialog(hwnd,IDOK);return TRUE;}
-        if(card_signal_busy())return TRUE;
         if(LOWORD(wp)==1742){SetDlgItemTextW(hwnd,1741,card_format_peers().c_str());return TRUE;}
         if(LOWORD(wp)==1743){
             if(MessageBoxW(hwnd,tcard_text(L"sync.cache_confirm",L"Clear the connection log? Endpoint candidates, IP settings, notes and keys are kept."),L"TCard",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES)return TRUE;
@@ -359,7 +291,6 @@ INT_PTR CALLBACK card_handle_peers(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 }
 void card_show_peers(HWND owner)
 {
-    if(card_signal_busy())return;
     DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;dialog.cx=360;dialog.cy=240;
     std::vector<WORD> data(sizeof(dialog)/sizeof(WORD));memcpy(data.data(),&dialog,sizeof(dialog));data.insert(data.end(),{0,0,0,9});
     const wchar_t face[]=L"Segoe UI";data.insert(data.end(),face,face+ARRAYSIZE(face));
@@ -393,7 +324,7 @@ void card_refresh_status(HWND hwnd)
 }
 INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
-    if(message==WM_DESTROY){delete reinterpret_cast<tcard_bridge::Settings*>(RemovePropW(hwnd,L"TCardSync.SignalDraft"));RemovePropW(hwnd,L"TCardSync.WhiteOpen");RemovePropW(hwnd,L"TCardSync.BlackOpen");}
+    if(message==WM_DESTROY){RemovePropW(hwnd,L"TCardSync.WhiteOpen");RemovePropW(hwnd,L"TCardSync.BlackOpen");}
     if(const INT_PTR painted=tcard_ui::paint_settings(hwnd,message,wp,lp))return painted;
     if(message==WM_INITDIALOG){
         SetWindowTextW(hwnd,tcard_text(L"sync.settings",L"Sync settings"));const auto font=SendMessageW(hwnd,WM_GETFONT,0,0);
@@ -404,22 +335,17 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             SendMessageW(child,WM_SETFONT,font,TRUE);return child;
         };
         auto settings=tcard_bridge::ReadSettings(preferences_path());
-        auto* draft=new tcard_bridge::Settings(settings);if(!SetPropW(hwnd,L"TCardSync.SignalDraft",reinterpret_cast<HANDLE>(draft))){delete draft;EndDialog(hwnd,IDCANCEL);return TRUE;}
         if(!settings.hasPolicy)settings.whitelist=g_sync_client.DefaultWhitelist();
         settings.peers=tcard_bridge::EditPeers(settings);settings.peerPort=0;
-        control(L"STATIC",tcard_text(L"sync.local",L"Synchronize on your local LAN and allowed networks."),0,1700,8,8,304,12);
+        control(L"STATIC",tcard_text(L"sync.local",L"Synchronize on your local LAN."),0,1700,8,8,304,12);
         control(L"BUTTON",tcard_text(L"sync.enable",L"Enable synchronization"),WS_TABSTOP|BS_AUTOCHECKBOX,1701,8,28,304,14);
         CheckDlgButton(hwnd,1701,settings.enabled?BST_CHECKED:BST_UNCHECKED);
         control(L"STATIC",tcard_text(L"sync.listen_port",L"Connection port"),SS_CENTERIMAGE,1702,8,44,84,14);
         control(L"EDIT",std::to_wstring(settings.listenPort).c_str(),WS_TABSTOP|ES_NUMBER|ES_AUTOHSCROLL,1703,96,44,64,14);
         control(L"STATIC",tcard_text(L"sync.port_help",L"This device's listening port"),SS_CENTERIMAGE,1704,168,44,144,14);
-        control(L"BUTTON",tcard_text(L"sync.remote_admission",L"Allow connections outside the LAN"),WS_TABSTOP|BS_AUTOCHECKBOX,1734,8,60,140,14);
-        CheckDlgButton(hwnd,1734,settings.remoteAdmission?BST_CHECKED:BST_UNCHECKED);
-        control(L"STATIC",tcard_text(L"sync.remote_help",L"Whitelist entry required"),SS_CENTERIMAGE,1705,152,60,160,14);
-        control(L"STATIC",tcard_text(L"sync.peers",L"Priority destinations"),0,1714,8,84,216,16);
-        control(L"BUTTON",tcard_text(L"sync.signaling",L"Signaling..."),WS_TABSTOP|BS_PUSHBUTTON,1735,232,84,80,16);
+        control(L"STATIC",tcard_text(L"sync.peers",L"Priority destinations"),0,1714,8,64,304,16);
         const DWORD listStyle=WS_TABSTOP|ES_MULTILINE|ES_WANTRETURN|ES_AUTOVSCROLL|WS_VSCROLL;
-        const auto peers=control(L"EDIT",tcard_bridge::EditLines(settings.peers).c_str(),listStyle,1715,8,104,304,32);
+        const auto peers=control(L"EDIT",tcard_bridge::EditLines(settings.peers).c_str(),listStyle,1715,8,84,304,32);
         SetWindowSubclass(peers,card_handle_cue,1,0);
         control(L"BUTTON",L"",WS_TABSTOP|BS_PUSHBUTTON|BS_LEFT|BS_FLAT,1716,8,160,304,16);
         control(L"EDIT",tcard_bridge::EditLines(settings.whitelist).c_str(),listStyle,1717,8,176,304,32);
@@ -440,7 +366,6 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         control(L"BUTTON",tcard_text(L"button.cancel",L"Cancel"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,260,416,52,16);
         SendDlgItemMessageW(hwnd,1703,EM_SETLIMITTEXT,5,0);
         for(int id:{1715,1717,1719})SendDlgItemMessageW(hwnd,id,EM_SETLIMITTEXT,4096,0);
-        ShowWindow(GetDlgItem(hwnd,1735),card_signal_available()?SW_SHOWNA:SW_HIDE);
         card_sync_allow(hwnd);card_sync_layout(hwnd);SetTimer(hwnd,1,500,nullptr);tcard_ui::prepare_settings(hwnd);return TRUE;
     }
     if(message==WM_CONTEXTMENU&&reinterpret_cast<HWND>(wp)==GetDlgItem(hwnd,1711)){
@@ -454,10 +379,6 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     if(message==WM_COMMAND&&(LOWORD(wp)==1716||LOWORD(wp)==1718)&&HIWORD(wp)==BN_CLICKED){
         const auto name=LOWORD(wp)==1716?L"TCardSync.WhiteOpen":L"TCardSync.BlackOpen";
         if(GetPropW(hwnd,name))RemovePropW(hwnd,name);else SetPropW(hwnd,name,reinterpret_cast<HANDLE>(1));card_sync_layout(hwnd);return TRUE;
-    }
-    if(card_signal_busy()&&(message==WM_TIMER||message==WM_COMMAND)){
-        if(message==WM_COMMAND&&LOWORD(wp)==IDCANCEL)EndDialog(hwnd,IDCANCEL);
-        else card_refresh_status(hwnd);return TRUE;
     }
     if(message==WM_TIMER&&wp==2){
         try{
@@ -476,13 +397,11 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         return TRUE;
     }
     if(message==WM_TIMER){
-        ShowWindow(GetDlgItem(hwnd,1735),card_signal_available()?SW_SHOWNA:SW_HIDE);
         try{g_sync_client.Ready();}catch(...){g_sync_client.status=L"sync.failed";}
         card_refresh_status(hwnd);return TRUE;
     }
     if(message==WM_DESTROY){KillTimer(hwnd,1);KillTimer(hwnd,2);RemovePropW(hwnd,L"TCardSync.Check");return TRUE;}
     if(message==WM_COMMAND){
-        if(LOWORD(wp)==1735){if(!card_signal_available())return TRUE;if(auto* draft=reinterpret_cast<tcard_bridge::Settings*>(GetPropW(hwnd,L"TCardSync.SignalDraft"))){auto edited=*draft;card_show_signal_settings(hwnd,edited);if(IsWindow(hwnd)&&GetPropW(hwnd,L"TCardSync.SignalDraft")==reinterpret_cast<HANDLE>(draft))*draft=std::move(edited);}return TRUE;}
         if(LOWORD(wp)==1732){card_show_peers(hwnd);return TRUE;}
         if(LOWORD(wp)==1730){KillTimer(hwnd,2);RemovePropW(hwnd,L"TCardSync.Check");EnableWindow(GetDlgItem(hwnd,1731),TRUE);card_show_keys(hwnd);return TRUE;}
         if(LOWORD(wp)==1731){
@@ -498,7 +417,6 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 }
 void card_show_sync(HWND owner)
 {
-    if(card_signal_busy())return;
     if(!g_sync_client.Available())return;
     DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;dialog.cx=320;dialog.cy=360;
     std::vector<WORD> data(sizeof(dialog)/sizeof(WORD));memcpy(data.data(),&dialog,sizeof(dialog));data.insert(data.end(),{0,0,0,9});

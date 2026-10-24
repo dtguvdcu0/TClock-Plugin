@@ -9,7 +9,7 @@
 #ifndef MD4C_USE_UTF16
 #define MD4C_USE_UTF16
 #endif
-#include "../third_party/md4c/md4c.h"
+#include "../third_party/md4c/local/src/md4c.h"
 #pragma comment(lib, "bcrypt.lib")
 
 namespace tcard_asset {
