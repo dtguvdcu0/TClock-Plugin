@@ -1,5 +1,6 @@
 #pragma once
 #include "card_images.h"
+#include "card_image_actions.h"
 #include "../core/card_assets.h"
 #include <commctrl.h>
 #include <shellapi.h>
@@ -89,6 +90,7 @@ struct Document {
     std::string rtf;
     std::vector<std::wstring> images;
     std::vector<int> imageWidths;
+    std::vector<int> imageSizes;
     std::wstring imageMarker = L"\uf8ffTCARD_IMAGE\uf8ff";
     std::wstring anchorMarker = L"\uf8fdTCARD_ANCHOR\uf8fd";
     size_t headingAnchor = 0;
@@ -214,6 +216,9 @@ struct Document {
             d.imageLinked = !((uri.rfind(L"data:image/", 0) == 0 || tcard_asset::relative(uri, true)) && d.images.size() < 32);
             if (!d.imageLinked) {
                 d.images.push_back(uri);
+                const auto title=attribute(static_cast<MD_SPAN_IMG_DETAIL*>(detail)->title);const auto marker=title.rfind(L"[tcard-size:");int requested=0;
+                if(marker!=std::wstring::npos&&title.back()==L']'){const auto digits=title.substr(marker+12,title.size()-marker-13);if(!digits.empty()&&digits.size()<=4&&digits.find_first_not_of(L"0123456789")==std::wstring::npos)requested=std::clamp(_wtoi(digits.c_str()),0,8192);}
+                d.imageSizes.push_back(requested);
                 d.imageWidths.push_back((std::max)(120, d.width / static_cast<int>(d.cell && d.columns ? d.columns : 1) - 240));
                 d.rtf += rtf_text(d.imageMarker);
             } else d.link(uri);
@@ -297,7 +302,7 @@ inline std::wstring control_text(HWND control)
     const auto copied = SendMessageW(control, EM_GETTEXTEX, reinterpret_cast<WPARAM>(&get), reinterpret_cast<LPARAM>(value.data()));
     value.resize(static_cast<size_t>((std::max)(LRESULT(0), copied))); return value;
 }
-struct View { std::wstring source, family, assetRoot; std::vector<Anchor> anchors; std::map<std::wstring, tcard_image::Picture> pictures; float size = 0; bool enabled = false, busy = false, valid = false; int width = 0; COLORREF paper = RGB(255,255,255); };
+struct View { std::wstring source, family, assetRoot; std::vector<Anchor> anchors; std::map<std::wstring, tcard_image::Picture> pictures; float size = 0; bool enabled = false, busy = false, valid = false; int width = 0,height=0; COLORREF paper = RGB(255,255,255); };
 inline constexpr UINT_PTR view_id = 0x54434d44;
 inline View* view(HWND control);
 inline void render(HWND control, const std::wstring& source, bool enabled, float size, const std::wstring& family, const std::wstring& assetRoot = {}, COLORREF paper = RGB(255,255,255));
@@ -331,10 +336,10 @@ inline void render(HWND control, const std::wstring& source, bool enabled, float
     RECT rect{}; GetClientRect(control, &rect);
     HDC dc = GetDC(control); const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96; if (dc) ReleaseDC(control, dc);
     const int width = MulDiv((std::max)(8L, rect.right - 24), 1440, dpi);
-    if (state->valid && state->source == source && state->assetRoot == assetRoot && state->enabled == enabled && state->size == size && state->family == family && state->paper == paper && (!enabled || state->width == width)) return;
+    if (state->valid && state->source == source && state->assetRoot == assetRoot && state->enabled == enabled && state->size == size && state->family == family && state->paper == paper && (!enabled || (state->width == width&&state->height==rect.bottom))) return;
     if (state->source != source || state->assetRoot != assetRoot) state->pictures.clear();
     state->assetRoot = assetRoot; state->paper = paper;
-    state->source = source; state->family = family; state->enabled = enabled; state->size = size; state->width = width; state->busy = true;
+    state->source = source; state->family = family; state->enabled = enabled; state->size = size; state->width = width;state->height=rect.bottom; state->busy = true;
     CHARRANGE selection{}; POINT scroll{};
     SendMessageW(control, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection)); SendMessageW(control, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
     const bool readonly = (GetWindowLongPtrW(control, GWL_STYLE) & ES_READONLY) != 0;
@@ -349,9 +354,18 @@ inline void render(HWND control, const std::wstring& source, bool enabled, float
         SendMessageW(control, EM_STREAMIN, SF_RTF, reinterpret_cast<LPARAM>(&stream));
         if (stream.dwError) SetWindowTextW(control, source.c_str());
         else {
+            tcard_image_ui::clear(control,true);
             size_t imageIndex = 0, placedBytes = 0;
             for (const auto& uri : doc.images) {
-                const LONG available = MulDiv(doc.imageWidths[imageIndex++], 2540, 1440);
+                const size_t index=imageIndex++;
+                const LONG available = MulDiv(doc.imageWidths[index], 2540, 1440);
+                const auto place=[&](size_t at,const tcard_image::Picture& original){
+                    tcard_image::Picture picture;picture.width=original.width;picture.height=original.height;
+                    if(doc.imageSizes[index]){picture.width=MulDiv(doc.imageSizes[index],2540,96);picture.height=MulDiv(original.height,picture.width,original.width);}
+                    tcard_image_ui::fit(control,picture,available);
+                    const DWORD identity=static_cast<DWORD>(index+1);tcard_image_ui::bind(control,identity,{state->assetRoot,uri,MulDiv(original.width,96,2540),MulDiv(original.height,96,2540),1});
+                    return tcard_image::place(control,at,original,available,identity,false,picture.width,picture.height);
+                };
                 const auto text = control_text(control); const auto at = text.find(doc.imageMarker);
                 if (at == std::wstring::npos) break;
                 SendMessageW(control, EM_SETSEL, at, at + doc.imageMarker.size());
@@ -359,14 +373,14 @@ inline void render(HWND control, const std::wstring& source, bool enabled, float
                 auto found = state->pictures.find(uri);
                 if (found == state->pictures.end()) {
                     const auto imageData = tcard_asset::relative(uri, true) ? tcard_asset::load_image(state->assetRoot, uri) : uri;
-                    auto picture = tcard_image::decode(imageData);
+                    auto picture = tcard_image::decode(imageData,512000);
                     if (picture.dib.size() > 64 * 1024 * 1024 - placedBytes) continue;
                     size_t cached = 0; for (const auto& entry : state->pictures) cached += entry.second.dib.size();
                     if (cached + picture.dib.size() <= 16 * 1024 * 1024) found = state->pictures.emplace(uri, std::move(picture)).first;
-                    else if (!picture.dib.empty()) { tcard_image::place(control, at, picture, available); placedBytes += picture.dib.size(); }
+                    else if (!picture.dib.empty()) { place(at,picture); placedBytes += picture.dib.size(); }
                 }
                 if (found != state->pictures.end() && !found->second.dib.empty() && found->second.dib.size() <= 64 * 1024 * 1024 - placedBytes) {
-                    tcard_image::place(control, at, found->second, available); placedBytes += found->second.dib.size();
+                    place(at,found->second); placedBytes += found->second.dib.size();
                 }
             }
             for (auto& anchor : state->anchors) {
@@ -378,7 +392,7 @@ inline void render(HWND control, const std::wstring& source, bool enabled, float
             }
         }
     } else {
-        state->anchors.clear();
+        tcard_image_ui::clear(control);state->anchors.clear();
         SetWindowTextW(control, source.c_str()); SendMessageW(control, EM_SETSEL, 0, -1);
         CHARFORMAT2W face{}; face.cbSize = sizeof(face); face.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_ITALIC | CFM_STRIKEOUT | CFM_HIDDEN | CFM_UNDERLINE | CFM_COLOR | CFM_BACKCOLOR | CFM_LINK;
         face.dwEffects = CFE_AUTOCOLOR | CFE_AUTOBACKCOLOR; face.yHeight = static_cast<LONG>(size * 20);

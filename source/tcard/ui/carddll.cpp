@@ -13,6 +13,7 @@
 #include "card_theme.h"
 #include "card_language.h"
 #include "card_editor.h"
+#include "card_edit_tools.h"
 #include "card_rich_edit.h"
 #include "card_fonts.h"
 #include <commdlg.h>
@@ -43,7 +44,7 @@ struct TCARD_WUI_HOST__ {
     HWND menuButton = nullptr;
     HWND minimizeButton = nullptr;
     HWND toolsTooltip = nullptr;
-    std::wstring toolLabels[12];
+    std::wstring toolLabels[tcard_tools::count];
     HWND editorOwner = nullptr;
     TCARD_WUI_COMMAND_CALLBACK callback = nullptr;
     void* callbackContext = nullptr;
@@ -277,7 +278,7 @@ static void sync_read_text(TCARD_WUI_HOST host)
     const bool redraw=(GetWindowLongPtrW(control,GWL_STYLE)&WS_VISIBLE)!=0;
     if(redraw)SendMessageW(control,WM_SETREDRAW,FALSE,0);
     if(host->richHtml&&!host->markdown)
-        tcard_rich_edit::load_preview(host->readEditor,host->textText,host->fontSize,host->fontFamilyText,host->state.backColor,host->state.textColor);
+        tcard_rich_edit::load_preview(host->readEditor,host->textText,host->fontSize,host->fontFamilyText,host->state.backColor,host->state.textColor,host->assetRoot);
     else {
         tcard_rich_edit::detach(host->readEditor);
         tcard_md::render(host->readEditor, host->textText, host->markdown, host->fontSize, host->fontFamilyText, host->assetRoot, host->state.backColor);
@@ -285,6 +286,7 @@ static void sync_read_text(TCARD_WUI_HOST host)
     }
     SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&selection));
     SendMessageW(control,EM_SETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));
+    tcard_tools::preview_images(control,host->editing&&host->previewing?host->sourceEditor:nullptr);
     update_vertical_scroll(control);
     if(redraw){
         SendMessageW(control,WM_SETREDRAW,TRUE,0);
@@ -419,6 +421,7 @@ static void begin_edit(TCARD_WUI_HOST host)
     ShowWindow(tcard_ui::create_label(host->window, 5024, L"", host->uiFont), SW_SHOW);
     host->titleEditor = CreateWindowExW(0, L"EDIT", host->titleText.c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP, tcard_ui::kPaperInsetDip, tcard_ui::kEditHeaderDip + 8, width - tcard_ui::kPaperInsetDip * 2, 28, host->window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kEditTitle)), g_instance, nullptr);
     host->sourceEditor = tcard_edit::create(host->window, kEditSource, kEditSave, host->markdown ? host->sourceText.c_str() : L"", tcard_ui::kPaperInsetDip, tcard_ui::kEditHeaderDip + 40, width - tcard_ui::kPaperInsetDip * 2, max(80, height - tcard_ui::kEditHeaderDip - tcard_ui::kEditorCommandDip - 40), g_instance, !host->markdown);
+    tcard_edit::set_assets(host->sourceEditor,host->assetRoot);
     tcard_ui::attach_scroll(host->sourceEditor, host->state.backColor);
     tcard_edit::attach(host->titleEditor, false, kEditSave);
     SendMessageW(host->sourceEditor, EM_SETBKGNDCOLOR, 0, host->state.backColor);
@@ -454,7 +457,7 @@ static void begin_edit(TCARD_WUI_HOST host)
     host->draftReady=host->markdown;
     if(!host->markdown)host->draftReady=tcard_rich_edit::load(host->sourceEditor,
       host->richHtml?tcard_rich::parse(host->sourceText):tcard_rich::plain(host->sourceText),
-      host->fontSize,host->fontFamilyText,host->state.backColor,host->state.textColor,true);
+      host->fontSize,host->fontFamilyText,host->state.backColor,host->state.textColor,true,host->assetRoot);
     card_create_tools(host);
     host->loadingDraft=false;host->editDirty=false;
     if(!host->draftReady){EnableWindow(host->sourceEditor,FALSE);SetWindowTextW(GetDlgItem(host->window,kToolStatus),tcard_text(L"status.load_failed",L"Load failed"));}
@@ -621,7 +624,7 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
                 SendMessageW(host->sourceEditor,EM_SETTEXTMODE,(markdown?TM_PLAINTEXT:TM_RICHTEXT)|TM_MULTILEVELUNDO,0);
                 host->markdown=markdown;host->richHtml=!markdown;host->previewing=false;
                 if(markdown){SetWindowTextW(host->sourceEditor,text.c_str());host->draftReady=true;}
-                else host->draftReady=tcard_rich_edit::load(host->sourceEditor,tcard_rich::plain(text),host->fontSize,host->fontFamilyText,host->editColor,host->state.textColor,true);
+                else host->draftReady=tcard_rich_edit::load(host->sourceEditor,tcard_rich::plain(text),host->fontSize,host->fontFamilyText,host->editColor,host->state.textColor,true,host->assetRoot);
                 host->loadingDraft=false;
                 if(!host->draftReady){EnableWindow(host->sourceEditor,FALSE);SetWindowTextW(GetDlgItem(hwnd,kToolStatus),tcard_text(L"status.load_failed",L"Load failed"));}
                 card_mark_dirty(host);
@@ -695,8 +698,8 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
         SetDlgItemTextW(hwnd,kToolFirst+11,tcard_text(host->previewing?L"button.edit":L"button.preview",host->previewing?L"Edit":L"Preview"));
         if(HWND status=GetDlgItem(hwnd,kToolStatus))SetWindowTextW(status,tcard_text(host->editDirty?L"status.editing_source":L"status.saved",host->editDirty?L"Editing source":L"Saved"));
         for(size_t i=0;i<ARRAYSIZE(kCardColors);++i)SetDlgItemTextW(hwnd,kColorFirst+static_cast<int>(i),tcard_text(kCardColors[i].key,kCardColors[i].name));
-        const wchar_t* keys[]={L"tool.bold",L"tool.italic",L"tool.underline",L"tool.strike",L"tool.list",L"tool.color",L"tool.scale",L"tool.checkpoint",L"tool.heading",L"tool.link",L"tool.code",L"tool.view"};
-        const wchar_t* tips[]={L"Bold",L"Italic",L"Underline",L"Strikethrough",L"List",L"Text color",L"Selection scale (%)",L"Today's stopping point",L"Heading",L"Link",L"Code",L"Edit / Preview"};
+        const auto& keys=tcard_tools::keys;
+        const auto& tips=tcard_tools::tips;
         for(int i=0;i<kToolCount;++i){
             if(!GetDlgItem(hwnd,kToolFirst+i))continue;
             host->toolLabels[i]=tcard_text(keys[i],tips[i]);
@@ -751,6 +754,7 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
             AppendMenuW(menu,MF_STRING,100,tcard_text(L"button.appearance",L"Appearance"));
             AppendMenuW(menu,MF_STRING,101,tcard_text(L"copy.note",L"Copy title and note"));
             AppendMenuW(menu,MF_STRING,102,tcard_text(L"copy.plain",L"Copy selection as plain text"));
+            AppendMenuW(menu,MF_STRING,104,tcard_text(L"tool.image",L"Insert image..."));
             AppendMenuW(menu, MF_STRING | (host->topmost ? MF_CHECKED : 0), 2, tcard_text(L"context.always_on_top", L"Always on top"));
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, 4, tcard_text(L"context.show_list", L"Show list"));
@@ -769,6 +773,8 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
             host->menuOpen=true;
             const UINT command = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, hwnd, nullptr);
             DestroyMenu(menu);host->menuOpen=false;
+            if(command==104){if(!host->editing)begin_edit(host);if(!host->editing||!host->draftReady)return 0;
+                if(host->appearanceOpen)SendMessageW(hwnd,WM_COMMAND,kEditAppearance,0);if(host->previewing)card_toggle_view(host);card_run_tool(host,12);return 0;}
             if(command==103){end_edit(host,true);return 0;}
             if(command==100){if(!host->editing)begin_edit(host);SendMessageW(hwnd,WM_COMMAND,kEditAppearance,0);return 0;}
             if(command==101||command==102){
@@ -791,7 +797,7 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
         return 0;
     case WM_NOTIFY:
         if(reinterpret_cast<NMHDR*>(lParam)->code==EN_SELCHANGE&&reinterpret_cast<NMHDR*>(lParam)->hwndFrom==host->sourceEditor&&!host->markdown&&!host->loadingDraft&&!host->readingScale){
-            const auto label=std::to_wstring(card_get_scale(host))+L"%";
+            const auto label=std::to_wstring(tcard_rich_edit::selection_scale(host->sourceEditor))+L"%";
             SetWindowTextW(GetDlgItem(hwnd,kToolFirst+6),label.c_str());return 0;
         }
         return tcard_md::notify(lParam);

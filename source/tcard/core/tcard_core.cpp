@@ -1361,13 +1361,16 @@ bool SaveCards(const std::wstring& filePath, std::vector<CardRecord>& cards, boo
             } catch (...) { }
         }
         auto next = card;
-        if (card.markdown && !card.live && !tcard_sync::sync_importing) {
-            next.source = tcard_asset::externalize(bundle, card.source);
+        if (((card.markdown && !card.live) || card.richHtml) && !tcard_sync::sync_importing) {
+            next.source = card.richHtml?tcard_asset::externalize_rich(bundle,card.source):tcard_asset::externalize(bundle, card.source);
             if (next.source != card.source && !previous.id.empty() && previous.source == card.source) {
                 std::wstring backup;
-                if (!tcard_asset::version(bundle, card.source, card.markdown, backup)) return false;
+                if (!tcard_asset::version(bundle, card.source, card.markdown, backup,card.richHtml)) return false;
             }
         }
+        if(!previous.id.empty())unchanged=previous.title==next.title&&previous.color==next.color&&previous.fontFamily==next.fontFamily&&
+            previous.fontSize==next.fontSize&&previous.inheritFontFamily==next.inheritFontFamily&&previous.inheritFontSize==next.inheritFontSize&&
+            previous.live==next.live&&previous.markdown==next.markdown&&previous.richHtml==next.richHtml&&previous.source==next.source;
         std::wstring sourceFile;
         if (!tcard_asset::version(bundle, next.source, next.markdown, sourceFile, next.richHtml)) return false;
         FILETIME created = card.createdUtc, updated = card.updatedUtc;

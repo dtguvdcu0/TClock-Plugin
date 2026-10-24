@@ -1,6 +1,9 @@
 #pragma once
 
 #include "card_document.h"
+#include "card_language.h"
+#include "card_image_codec.h"
+#include "card_image_actions.h"
 #include "../core/card_rich.h"
 #include <tom.h>
 #include "card_editor.h"
@@ -22,14 +25,22 @@ struct PasteJob {
     std::atomic_bool done{false},cancelled{false};
     CHARRANGE selection{};
     std::thread worker;
+    std::wstring origin;bool needsAdjustment=false;
 };
-inline constexpr UINT_PTR kPasteTimer=0x54435049;
+inline constexpr UINT_PTR kPasteTimer=0x54435049,kImageTimer=0x54434946;
+inline bool (*image_insert)(HWND,tcard_clip::ClipboardData&&)=nullptr;
+inline bool image_adjust(HWND control)
+{
+    return MessageBoxW(GetAncestor(control,GA_ROOT),tcard_lang::text(L"image.adjust",L"This image exceeds 8 MiB. Create a smaller copy for this note?").c_str(),L"TCard",MB_YESNO|MB_ICONQUESTION)==IDYES;
+}
 struct State {
     bool logical = false;
     bool loading = false;
     bool editable = false;
+    bool loadFailed = false;
     double base = 14;
     std::wstring family = L"Segoe UI";
+    std::wstring assetRoot;
     COLORREF paper = RGB(255,255,255);
     COLORREF ink = RGB(37,37,37);
     std::map<DWORD,tcard_rich::Run> images;
@@ -131,6 +142,7 @@ inline void columns(HWND control,const tcard_rich::Paragraph& paragraph)
     for(int i=0;i<para.cTabCount;++i)para.rgxTabs[i]=width*(i+1)/paragraph.columns;
     SendMessageW(control,EM_SETPARAFORMAT,0,reinterpret_cast<LPARAM>(&para));
 }
+inline bool resize_image(HWND control,DWORD identity,int width);
 inline bool insert_images(HWND control,const tcard_rich::Document& doc,LONG offset,bool undo)
 {
     if(auto* value=state(control))for(const auto& paragraph:doc.paragraphs)
@@ -140,12 +152,18 @@ inline bool insert_images(HWND control,const tcard_rich::Document& doc,LONG offs
     RECT area{};GetClientRect(control,&area);
     const double zoom=value->logical?value->base/5.0:1.0;
     const LONG available=static_cast<LONG>(MulDiv((std::max)(1L,area.right-12),2540,GetDpiForWindow(control))/zoom);
+    size_t count=0,used=0;for(const auto& paragraph:doc.paragraphs)for(const auto& run:paragraph.runs)if(!run.image.empty())++count;
+    ComPtr<IRichEditOle> current;SendMessageW(control,EM_GETOLEINTERFACE,0,reinterpret_cast<LPARAM>(current.GetAddressOf()));const auto* entries=tcard_image_ui::state(control);
+    if(current&&entries)for(LONG i=0;i<current->GetObjectCount();++i){REOBJECT object{};object.cbStruct=sizeof(object);if(SUCCEEDED(current->GetObject(i,&object,REO_GETOBJ_NO_INTERFACES))){const auto entry=entries->entries.find(object.dwUser);if(entry!=entries->entries.end())used+=entry->second.bytes;}}
+    const size_t pixels=(std::min)(size_t(512000),((std::max)(size_t(4096),size_t(64*1024*1024)-(std::min)(used,size_t(64*1024*1024))))/(std::max)(size_t(1),count)/4);
     for(const auto& paragraph:doc.paragraphs){
         for(const auto& run:paragraph.runs){
             if(!run.image.empty()){
-                auto picture=tcard_image::decode(run.image);
+                const auto uri=tcard_asset::relative(run.image,true)?tcard_asset::load_image(value->assetRoot,run.image):run.image;
+                auto picture=tcard_image::decode(uri,pixels);
                 if(picture.dib.empty())return false;
                 const double naturalWidth=picture.width,naturalHeight=picture.height;
+                const int pixelsWide=MulDiv(picture.width,96,2540),pixelsHigh=MulDiv(picture.height,96,2540);
                 double width=run.width?run.width*2540.0/96.0:naturalWidth;
                 double height=run.height?run.height*2540.0/96.0:naturalHeight;
                 if(run.width&&!run.height)height=naturalHeight*width/naturalWidth;
@@ -154,6 +172,8 @@ inline bool insert_images(HWND control,const tcard_rich::Document& doc,LONG offs
                 picture.height=(std::max)(1L,static_cast<LONG>(height/zoom));
                 const DWORD identity=value->nextImage++;
                 value->images.emplace(identity,run);
+                tcard_image_ui::fit(control,picture,paragraph.columns>1?available/paragraph.columns:available,zoom);
+                tcard_image_ui::bind(control,identity,{value->assetRoot,run.image,pixelsWide,pixelsHigh,zoom,picture.dib.size(),paragraph.columns},value->editable?resize_image:nullptr);
                 if(!tcard_image::place(control,offset,picture,paragraph.columns>1?available/paragraph.columns:available,identity,undo))return false;
             }
             offset+=static_cast<LONG>(run.text.size());
@@ -176,13 +196,13 @@ inline CHARFORMAT2W format(const tcard_rich::Style& style,const std::wstring& fa
     wcsncpy_s(value.szFaceName,family.c_str(),_TRUNCATE);
     return value;
 }
-inline bool load(HWND control,const tcard_rich::Document& doc,double base,const std::wstring& family,COLORREF paper,COLORREF ink,bool editable)
+inline bool load(HWND control,const tcard_rich::Document& doc,double base,const std::wstring& family,COLORREF paper,COLORREF ink,bool editable,const std::wstring& assetRoot={})
 {
     if(doc.paragraphs.empty()||!text_document(control))return false;
     configure(control,true,base,family,paper,ink,editable);
-    auto* value=state(control);if(!value)return false;
+    auto* value=state(control);if(!value)return false;value->assetRoot=assetRoot;
     if(value->pasteJob){value->pasteJob->cancelled=true;if(value->pasteJob->worker.joinable())value->pasteJob->worker.join();value->pasteJob.reset();KillTimer(control,kPasteTimer);EnableWindow(control,TRUE);}
-    value->loading=true;
+    value->loading=true;value->loadFailed=true;
     struct LoadingScope{State* value;~LoadingScope(){value->loading=false;}} loading{value};
     const bool readOnly=(GetWindowLongPtrW(control,GWL_STYLE)&ES_READONLY)!=0;
     SendMessageW(control,EM_SETREADONLY,FALSE,0);
@@ -226,13 +246,13 @@ inline bool load(HWND control,const tcard_rich::Document& doc,double base,const 
         columns(control,paragraph);
         ++position;
     }
-    value->images.clear();
+    value->images.clear();tcard_image_ui::clear(control);
     if(!insert_images(control,doc,0,false)){SendMessageW(control,EM_SETREADONLY,readOnly,0);return false;}
     SendMessageW(control,EM_SETSEL,0,0);
     SendMessageW(control,EM_EMPTYUNDOBUFFER,0,0);
     SendMessageW(control,EM_SETMODIFY,FALSE,0);
     SendMessageW(control,EM_SETREADONLY,readOnly,0);
-    value->loading=false;set_zoom(control,base);InvalidateRect(control,nullptr,FALSE);
+    value->loading=false;value->loadFailed=false;set_zoom(control,base);InvalidateRect(control,nullptr,FALSE);
     return true;
 }
 
@@ -253,7 +273,7 @@ struct ReadStream {
         memcpy(buffer,stream.bytes.data()+stream.offset,size);stream.offset+=size;*read=static_cast<LONG>(size);return 0;
     }
 };
-inline bool load_preview(HWND control,const std::wstring& source,double base,const std::wstring& family,COLORREF paper,COLORREF ink)
+inline bool load_preview(HWND control,const std::wstring& source,double base,const std::wstring& family,COLORREF paper,COLORREF ink,const std::wstring& assetRoot={})
 {
     struct ExactSize {LONG first,last,height;};
     struct Entry {
@@ -278,14 +298,14 @@ inline bool load_preview(HWND control,const std::wstring& source,double base,con
                 SendMessageW(control,EM_SETSEL,size.first,size.last);CHARFORMAT2W face{};face.cbSize=sizeof(face);face.dwMask=CFM_SIZE;face.yHeight=size.height;
                 if(!SendMessageW(control,EM_SETCHARFORMAT,SCF_SELECTION,reinterpret_cast<LPARAM>(&face))){stream.dwError=1;break;}
             }
-            value->images.clear();value->checkpoints=entry.checkpoints;
+            value->images.clear();tcard_image_ui::clear(control);value->assetRoot=assetRoot;value->checkpoints=entry.checkpoints;
             SendMessageW(control,EM_SETSEL,0,0);SendMessageW(control,EM_EMPTYUNDOBUFFER,0,0);SendMessageW(control,EM_SETMODIFY,FALSE,0);
             SendMessageW(control,EM_SETREADONLY,readonly,0);value->loading=false;set_zoom(control,base);
-            if(!stream.dwError){InvalidateRect(control,nullptr,FALSE);return true;}
+            if(!stream.dwError){value->loadFailed=false;InvalidateRect(control,nullptr,FALSE);return true;}
         }
         cache.erase(cache.begin());
     }
-    const auto doc=tcard_rich::parse(source);if(!load(control,doc,base,family,paper,ink,false))return false;
+    const auto doc=tcard_rich::parse(source);if(!load(control,doc,base,family,paper,ink,false,assetRoot))return false;
     // OLE images require their original object identities; retain the existing image loader.
     for(const auto& paragraph:doc.paragraphs)for(const auto& run:paragraph.runs)if(!run.image.empty())return true;
     if(source.size()>ReadStream::limit/sizeof(wchar_t))return true;
@@ -312,6 +332,7 @@ inline tcard_rich::Document document(HWND control,bool selectionOnly=false,bool*
     if(succeeded)*succeeded=false;
     tcard_rich::Document result;
     const auto text=raw_text(control);auto* value=state(control);
+    if(value&&(value->loadFailed||value->loading))return result;
     const auto tom=text_document(control);if(!tom)return result;
     CHARRANGE selected{0,static_cast<LONG>(text.size())};
     if(selectionOnly){SendMessageW(control,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&selected));if(selected.cpMin==selected.cpMax)return result;}
@@ -454,6 +475,9 @@ inline bool copy(HWND control,bool all=false,bool plainOnly=false,const std::wst
     auto* value=state(control);if(!value)return false;
     bool ok=false;auto doc=document(control,!all,&ok);if(!ok||doc.paragraphs.empty())return false;
     if(all&&!title.empty()){tcard_rich::Paragraph heading;tcard_rich::Style style;style.marks=tcard_rich::Bold;tcard_rich::append(heading,title,style);doc.paragraphs.insert(doc.paragraphs.begin(),std::move(heading));}
+    if(!plainOnly)for(auto& paragraph:doc.paragraphs)for(auto& run:paragraph.runs)if(tcard_asset::relative(run.image,true)){
+        run.image=tcard_asset::load_image(value->assetRoot,run.image);if(run.image.empty())return false;
+    }
     auto text=tcard_rich::text(doc);
     std::wstring normalized;for(size_t i=0;i<text.size();++i){if(text[i]==L'\n'&&(i==0||text[i-1]!=L'\r'))normalized+=L'\r';normalized+=text[i];}
     const auto html=clipboard_html(tcard_rich::serialize(doc,true,value->base,value->family,value->ink));
@@ -559,67 +583,121 @@ inline bool paste_document(HWND control,const tcard_rich::Document& doc)
     SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&caret));
     if(tom)tom->EndEditCollection();changed(control);return true;
 }
-inline bool paste(HWND control,bool plainOnly=false)
+inline bool resize_image(HWND control,DWORD identity,int width)
+{
+    auto* value=state(control);if(!value||!value->editable||!IsWindowEnabled(control)||value->pasteJob||tcard_edit::composing(control))return false;
+    const auto found=value->images.find(identity);if(found==value->images.end())return false;
+    ComPtr<IRichEditOle> ole;SendMessageW(control,EM_GETOLEINTERFACE,0,reinterpret_cast<LPARAM>(ole.GetAddressOf()));if(!ole)return false;
+    REOBJECT item{};bool exists=false;for(LONG i=0;i<ole->GetObjectCount();++i){item={};item.cbStruct=sizeof(item);if(SUCCEEDED(ole->GetObject(i,&item,REO_GETOBJ_NO_INTERFACES))&&item.dwUser==identity){exists=true;break;}}
+    if(!exists)return false;auto run=found->second;run.width=std::clamp(width,0,8192);run.height=0;
+    tcard_rich::Document doc;doc.paragraphs.emplace_back();doc.paragraphs[0].runs.push_back(run);
+    CHARRANGE selection{};POINT scroll{};SendMessageW(control,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&selection));SendMessageW(control,EM_GETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));
+    const auto tom=text_document(control);if(!tom)return false;tom->BeginEditCollection();SendMessageW(control,EM_STOPGROUPTYPING,0,0);
+    SendMessageW(control,EM_SETSEL,item.cp,item.cp+1);SendMessageW(control,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(L"\u25a1"));
+    const bool okay=insert_images(control,doc,item.cp,true);tom->EndEditCollection();SendMessageW(control,EM_STOPGROUPTYPING,0,0);
+    if(!okay)SendMessageW(control,EM_UNDO,0,0);SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&selection));SendMessageW(control,EM_SETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));if(okay)changed(control);return okay;
+}
+inline bool paste_images(HWND control,tcard_rich::Document doc,const std::wstring& origin={},bool adjust=false)
 {
     auto* value=state(control);if(!value||!value->logical||!value->editable||value->pasteJob)return false;
-    std::wstring html,text,origin;
-    if(!OpenClipboard(control))return false;
-    const UINT htmlId=RegisterClipboardFormatW(L"HTML Format");
-    if(!plainOnly&&htmlId)if(auto data=GetClipboardData(htmlId)){
-        const auto size=GlobalSize(data);if(size&&size<=16*1024*1024)if(const auto* p=static_cast<const char*>(GlobalLock(data))){
-            html=html_fragment(std::string(p,size),&origin);GlobalUnlock(data);
-        }
-    }
-    if(auto data=GetClipboardData(CF_UNICODETEXT)){
-        const auto size=GlobalSize(data);if(size&&size<=8*1024*1024)if(const auto* p=static_cast<const wchar_t*>(GlobalLock(data))){
-            const size_t capacity=size/sizeof(wchar_t);size_t count=0;while(count<capacity&&p[count])++count;
-            if(count<capacity)text.assign(p,count);GlobalUnlock(data);
-        }
-    }
-    CloseClipboard();
-    if(html.empty()&&text.empty())return false;
-    auto doc=!html.empty()?tcard_rich::parse(html,value->base):tcard_rich::plain(text);
-    bool images=false;
-    for(const auto& paragraph:doc.paragraphs)for(const auto& run:paragraph.runs)images|=!run.image.empty();
-    if(!images&&!html.empty()&&tcard_rich::text(doc).empty())doc=tcard_rich::plain(text);
-    if(doc.paragraphs.empty())return false;
-    if(!images)return paste_document(control,doc);
-    auto job=std::make_shared<PasteJob>();job->doc=std::move(doc);
+    auto job=std::make_shared<PasteJob>();job->doc=std::move(doc);job->origin=origin;
     SendMessageW(control,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&job->selection));
-    const auto used=tcard_rich::serialize(document(control)).size();
+    const auto used=tcard_rich::serialize(document(control)).size();const auto root=value->assetRoot;
     const size_t budget=used<3*1024*1024?3*1024*1024-used:0;
     if(!SetTimer(control,kPasteTimer,50,nullptr))return false;
     value->pasteFailed=false;value->pasteJob=job;EnableWindow(control,FALSE);
-    try{
-        job->worker=std::thread([job,origin,budget]{
-            try{
-                const auto deadline=GetTickCount64()+tcard_download::batch_ms;
-                size_t remaining=budget;unsigned requests=0;std::map<std::wstring,std::wstring> cache;
-                for(auto& paragraph:job->doc.paragraphs)for(auto& run:paragraph.runs){
-                    if(run.image.empty())continue;
-                    const auto address=run.image.starts_with(L"data:image/")?run.image:tcard_clip::url(run.image,origin);
-                    std::wstring embedded;
-                    if(!job->cancelled&&requests<12&&remaining){
-                        auto found=cache.find(address);
-                        if(found==cache.end()){
-                            ++requests;
-                            auto uri=address.starts_with(L"data:image/")?address:tcard_download::fetch(address,job->cancelled,deadline);
-                            if(uri.size()>remaining||tcard_image::decode(uri).dib.empty())uri.clear();
-                            found=cache.emplace(address,std::move(uri)).first;
+    try{job->worker=std::thread([job,origin,budget,root,adjust]{
+        try{
+            const auto deadline=GetTickCount64()+tcard_download::batch_ms;size_t remaining=budget;unsigned requests=0;std::map<std::wstring,std::wstring> cache;
+            for(auto& paragraph:job->doc.paragraphs)for(auto& run:paragraph.runs){
+                if(run.image.empty())continue;
+                if(tcard_asset::relative(run.image,true)){if(root.empty()||tcard_asset::load_image(root,run.image).empty())throw std::runtime_error("Pasted image reference unavailable");continue;}
+                const auto address=run.image.starts_with(L"data:image/")?run.image:tcard_clip::url(run.image,origin);
+                std::wstring embedded;
+                if(!job->cancelled&&requests<12&&remaining){
+                    const auto key=address.starts_with(L"data:image/")?tcard_asset::hash(tcard_clip::image_bytes(address)):address;
+                    auto found=cache.find(key);
+                    if(found==cache.end()){
+                        ++requests;auto uri=address.starts_with(L"data:image/")?address:tcard_download::fetch(address,job->cancelled,deadline);
+                        if(!uri.empty()){
+                            auto encoded=tcard_codec::prepare(tcard_clip::image_bytes(uri),adjust);
+                            if(encoded.oversized){job->needsAdjustment=true;job->done=true;return;}
+                            uri=tcard_codec::uri(encoded);
+                            if(job->cancelled)throw std::runtime_error("Image paste cancelled");
+                            if(!root.empty())uri=tcard_asset::image(root,uri);
                         }
-                        if(found->second.size()<=remaining)embedded=found->second;
+                        if(uri.size()>remaining)uri.clear();found=cache.emplace(key,std::move(uri)).first;
                     }
-                    if(embedded.empty()){
-                        run.text=run.alt.empty()?L"Image":run.alt;
-                        if(!address.empty()&&!address.starts_with(L"data:"))run.text+=L" ("+address+L")";
-                        run.image.clear();
-                    }else{remaining-=embedded.size();run.image=std::move(embedded);}
+                    if(found->second.size()<=remaining)embedded=found->second;
                 }
-            }catch(...){job->cancelled=true;}
-            job->done=true;
-        });
-    }catch(...){value->pasteJob.reset();KillTimer(control,kPasteTimer);EnableWindow(control,TRUE);return false;}
-    return true;
+                if(embedded.empty()){
+                    if(address.starts_with(L"data:image/"))throw std::runtime_error("Embedded image insertion failed");
+                    run.text=run.alt.empty()?L"Image":run.alt;if(!address.empty()&&!address.starts_with(L"data:"))run.text+=L" ("+address+L")";run.image.clear();
+                }else{remaining-=embedded.size();run.image=std::move(embedded);}
+            }
+        }catch(...){job->cancelled=true;}job->done=true;
+    });return true;}catch(...){value->pasteJob.reset();KillTimer(control,kPasteTimer);EnableWindow(control,TRUE);return false;}
+}
+inline bool paste_data(HWND control,tcard_clip::ClipboardData data,bool plainOnly=false)
+{
+    auto* value=state(control);if(!value||!value->logical||!value->editable||value->pasteJob)return false;
+    std::wstring html,text,origin;
+    if(!plainOnly&&!data.html.empty()&&data.html.size()<=16*1024*1024)html=html_fragment(std::string(data.html.begin(),data.html.end()),&origin);
+    if(!data.text.empty()&&data.text.size()<=8*1024*1024){
+        const size_t capacity=data.text.size()/sizeof(wchar_t);size_t count=0;const auto* p=reinterpret_cast<const wchar_t*>(data.text.data());while(count<capacity&&p[count])++count;if(count<capacity)text.assign(p,count);
+    }
+    // Parse text within its own budget while retaining separately bounded embedded images for the worker.
+    std::map<std::wstring,std::wstring> images;
+    try{if(!html.empty())html=tcard_asset::rich_images(html,[&](const std::wstring& uri){
+        if(!uri.starts_with(L"data:image/"))return uri;if(images.size()>=32)throw std::runtime_error("Too many pasted images");
+        const auto token=L"tcard-inline:"+std::to_wstring(images.size());images.emplace(token,uri);return token;
+    });}catch(...){return false;}
+    auto doc=!html.empty()?tcard_rich::parse(html,value->base):tcard_rich::plain(text);
+    bool hasImages=false,words=false;for(auto& paragraph:doc.paragraphs)for(auto& run:paragraph.runs){
+        if(auto image=images.find(run.image);image!=images.end())run.image=image->second;
+        hasImages|=!run.image.empty();if(run.image.empty())words|=std::any_of(run.text.begin(),run.text.end(),[](wchar_t c){return !iswspace(c);});
+    }
+    if(!plainOnly&&(html.empty()||!words)&&(!data.png.empty()||!data.dib.empty())&&image_insert)return image_insert(control,std::move(data));
+    const auto image=plainOnly?std::wstring{}:tcard_clip::bitmap_uri(data);
+    if(html.empty()&&text.empty()&&image.empty())return false;
+    if(!image.empty()&&(html.empty()||!words)){
+        doc={};doc.paragraphs.emplace_back();tcard_rich::Run run;run.image=image;run.alt=L"Image";run.text=L"\xfffc";doc.paragraphs.back().runs.push_back(std::move(run));hasImages=true;
+    }
+    if(!hasImages&&!html.empty()&&tcard_rich::text(doc).empty())doc=tcard_rich::plain(text);
+    if(doc.paragraphs.empty())return false;return hasImages?paste_images(control,std::move(doc),origin):paste_document(control,doc);
+}
+inline bool paste(HWND control,bool plainOnly=false)
+{
+    auto* value=state(control);if(!value||!value->logical||!value->editable||value->pasteJob)return false;
+    if(!OpenClipboard(control))return false;tcard_clip::ClipboardData data;
+    const auto capture=[](UINT format,size_t limit){try{return tcard_clip::clipboard_data(format,limit);}catch(...){return std::vector<BYTE>{};}};
+    if(!plainOnly){data.html=capture(RegisterClipboardFormatW(L"HTML Format"),16*1024*1024);data.png=capture(RegisterClipboardFormatW(L"PNG"),tcard_clip::max_image);if(data.png.empty())data.dib=capture(CF_DIB,tcard_codec::inputLimit-sizeof(BITMAPFILEHEADER));}
+    data.text=capture(CF_UNICODETEXT,8*1024*1024);CloseClipboard();return paste_data(control,std::move(data),plainOnly);
+}
+
+inline void fit_images(HWND control)
+{
+    auto* value=state(control);if(!value||value->loading||value->pasteJob||value->images.empty())return;
+    ComPtr<IRichEditOle> ole;SendMessageW(control,EM_GETOLEINTERFACE,0,reinterpret_cast<LPARAM>(ole.GetAddressOf()));const auto tom=text_document(control);if(!ole||!tom)return;
+    CHARRANGE selection{};POINT scroll{};SendMessageW(control,EM_EXGETSEL,0,reinterpret_cast<LPARAM>(&selection));SendMessageW(control,EM_GETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));
+    const bool readonly=(GetWindowLongPtrW(control,GWL_STYLE)&ES_READONLY)!=0,modified=SendMessageW(control,EM_GETMODIFY,0,0)!=0;const auto events=SendMessageW(control,EM_SETEVENTMASK,0,0);
+    value->loading=true;SendMessageW(control,EM_SETREADONLY,FALSE,0);LONG ignored=0;tom->Undo(tomSuspend,&ignored);tom->Freeze(&ignored);
+    const auto* bindings=tcard_image_ui::state(control);const double zoom=value->logical?value->base/5:1;
+    for(LONG index=0;index<ole->GetObjectCount();++index){
+        REOBJECT item{};item.cbStruct=sizeof(item);if(FAILED(ole->GetObject(index,&item,REO_GETOBJ_ALL_INTERFACES)))continue;
+        ComPtr<IOleObject> object;object.Attach(item.poleobj);ComPtr<IOleClientSite> site;site.Attach(item.polesite);ComPtr<IStorage> storage;storage.Attach(item.pstg);
+        const auto run=value->images.find(item.dwUser);if(run==value->images.end()||!bindings)continue;const auto entry=bindings->entries.find(item.dwUser);if(entry==bindings->entries.end())continue;
+        const auto& image=run->second;const auto& natural=entry->second;tcard_image::Picture picture;
+        double width=image.width?image.width:natural.width,height=image.height?image.height:natural.height;
+        if(image.width&&!image.height)height=natural.height*width/(std::max)(1,natural.width);if(image.height&&!image.width)width=natural.width*height/(std::max)(1,natural.height);
+        picture.width=(std::max)(1L,static_cast<LONG>(width*2540/96/zoom));picture.height=(std::max)(1L,static_cast<LONG>(height*2540/96/zoom));RECT client{};GetClientRect(control,&client);const LONG available=static_cast<LONG>(MulDiv((std::max)(1L,client.right-12),2540,GetDpiForWindow(control))/zoom/(std::max)(1,natural.columns));tcard_image_ui::fit(control,picture,available,zoom);
+        if(item.sizel.cx==picture.width&&item.sizel.cy==picture.height)continue;
+        const auto previous=item.sizel;item.sizel={picture.width,picture.height};
+        // Insert before removing the old occurrence so failed insertion cannot erase content.
+        SendMessageW(control,EM_SETSEL,item.cp,item.cp);if(tcard_image::reframe(ole.Get(),item)){SendMessageW(control,EM_SETSEL,item.cp+1,item.cp+2);SendMessageW(control,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(L""));}
+        else item.sizel=previous;
+    }
+    tom->Unfreeze(&ignored);tom->Undo(tomResume,&ignored);SendMessageW(control,EM_SETREADONLY,readonly,0);SendMessageW(control,EM_SETMODIFY,modified,0);SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&selection));SendMessageW(control,EM_SETSCROLLPOS,0,reinterpret_cast<LPARAM>(&scroll));SendMessageW(control,EM_SETEVENTMASK,0,events);value->loading=false;
 }
 inline void paint_checkpoints(HWND control)
 {
@@ -656,10 +734,15 @@ inline LRESULT CALLBACK editor_proc(HWND control,UINT message,WPARAM w,LPARAM l,
 {
     auto* value=reinterpret_cast<State*>(data);
     if(message==WM_NCDESTROY){RemoveWindowSubclass(control,editor_proc,id);delete value;return DefSubclassProc(control,message,w,l);}
+    if(message==WM_TIMER&&w==kImageTimer){KillTimer(control,kImageTimer);fit_images(control);return 0;}
     if(message==WM_TIMER&&w==kPasteTimer&&value->pasteJob){
         if(value->pasteJob->done){
             auto job=std::move(value->pasteJob);if(job->worker.joinable())job->worker.join();KillTimer(control,kPasteTimer);EnableWindow(control,TRUE);
             value->pasteFailed=job->cancelled;
+            if(job->needsAdjustment){
+                if(image_adjust(control)){SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&job->selection));value->pasteFailed=!paste_images(control,std::move(job->doc),job->origin,true);}
+                return 0;
+            }
             if(!job->cancelled){
                 SendMessageW(control,EM_EXSETSEL,0,reinterpret_cast<LPARAM>(&job->selection));
                 value->pasteFailed=!paste_document(control,job->doc);
@@ -678,6 +761,7 @@ inline LRESULT CALLBACK editor_proc(HWND control,UINT message,WPARAM w,LPARAM l,
         }
     }
     const auto result=DefSubclassProc(control,message,w,l);
+    if((message==WM_SIZE||message==EM_UNDO||message==EM_REDO||(message==WM_KEYUP&&(w=='Z'||w=='Y')))&&!value->loading&&!value->images.empty())SetTimer(control,kImageTimer,80,nullptr);
     if(message==WM_PAINT||message==WM_VSCROLL||message==WM_MOUSEWHEEL||message==WM_SIZE)paint_checkpoints(control);
     return result;
 }

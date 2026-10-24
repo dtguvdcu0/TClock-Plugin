@@ -11,7 +11,7 @@
 namespace tcard_image {
 using Microsoft::WRL::ComPtr;
 struct Picture { std::vector<BYTE> dib; LONG width = 0, height = 0; };
-inline Picture decode(const std::wstring& uri)
+inline Picture decode(const std::wstring& uri,size_t pixelBudget=4000000)
 {
     auto bytes = tcard_clip::image_bytes(uri);
     if (bytes.empty()) return {};
@@ -26,7 +26,7 @@ inline Picture decode(const std::wstring& uri)
     if (FAILED(decoder->GetFrame(0, &frame))) return {};
     UINT w = 0, h = 0;
     if (FAILED(frame->GetSize(&w, &h)) || !w || !h || w > 8192 || h > 8192 || static_cast<UINT64>(w) * h > 16000000) return {};
-    const double scale = (std::min)(1.0, (std::min)(std::sqrt(4000000.0 / (static_cast<double>(w) * h)), (std::min)(2048.0 / w, 4096.0 / h)));
+    const double scale = (std::min)(1.0, (std::min)(std::sqrt(double((std::max)(size_t(1),pixelBudget)) / (static_cast<double>(w) * h)), (std::min)(2048.0 / w, 4096.0 / h)));
     const UINT width = (std::max)(1U, static_cast<UINT>(w * scale));
     const UINT height = (std::max)(1U, static_cast<UINT>(h * scale));
     ComPtr<IWICBitmapScaler> scaler;
@@ -47,9 +47,33 @@ inline Picture decode(const std::wstring& uri)
             dst[x * 4 + 3] = 0;
         }
     }
-    const UINT displayWidth = (std::min)(w, 1200U);
+    const UINT displayWidth = w;
     const UINT displayHeight = (std::max)(1U, height * displayWidth / width);
     return {std::move(dib), MulDiv(displayWidth, 2540, 96), MulDiv(displayHeight, 2540, 96)};
+}
+// Compress native clipboard bitmaps before the editor's bounded inline representation.
+inline std::wstring png(const std::wstring& uri)
+{
+    const HRESULT initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+    struct Release{bool active;~Release(){if(active)CoUninitialize();}} release{SUCCEEDED(initialized)};
+    const auto picture=decode(uri);if(picture.dib.size()<sizeof(BITMAPINFOHEADER))return {};
+    BITMAPINFOHEADER header{};memcpy(&header,picture.dib.data(),sizeof(header));
+    const UINT width=static_cast<UINT>(header.biWidth),height=static_cast<UINT>(header.biHeight);if(!width||!height||picture.dib.size()!=sizeof(header)+size_t(width)*height*4)return {};
+    std::vector<BYTE> pixels(size_t(width)*height*4);for(UINT row=0;row<height;++row)memcpy(pixels.data()+size_t(row)*width*4,picture.dib.data()+sizeof(header)+size_t(height-row-1)*width*4,size_t(width)*4);
+    // decode returns an opaque, composited DIB with unused alpha bytes.
+    for(size_t pixel=3;pixel<pixels.size();pixel+=4)pixels[pixel]=255;
+    ComPtr<IWICImagingFactory> factory;ComPtr<IStream> stream;stream.Attach(SHCreateMemStream(nullptr,0));
+    ComPtr<IWICBitmapEncoder> encoder;ComPtr<IWICBitmapFrameEncode> frame;ComPtr<IPropertyBag2> options;
+    if(!stream||FAILED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)))||
+        FAILED(factory->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder))||FAILED(encoder->Initialize(stream.Get(),WICBitmapEncoderNoCache))||
+        FAILED(encoder->CreateNewFrame(&frame,&options))||FAILED(frame->Initialize(options.Get()))||FAILED(frame->SetSize(width,height)))return {};
+    WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
+    if(FAILED(frame->SetPixelFormat(&format))||format!=GUID_WICPixelFormat32bppBGRA||FAILED(frame->WritePixels(height,width*4,static_cast<UINT>(pixels.size()),pixels.data()))||FAILED(frame->Commit())||FAILED(encoder->Commit()))return {};
+    STATSTG size{};LARGE_INTEGER start{};
+    if(FAILED(stream->Stat(&size,STATFLAG_NONAME))||!size.cbSize.QuadPart||size.cbSize.QuadPart>tcard_clip::max_image||FAILED(stream->Seek(start,STREAM_SEEK_SET,nullptr)))return {};
+    std::vector<BYTE> bytes(static_cast<size_t>(size.cbSize.QuadPart));ULONG read=0;
+    if(FAILED(stream->Read(bytes.data(),static_cast<ULONG>(bytes.size()),&read))||read!=bytes.size())return {};
+    return L"data:image/png;base64,"+tcard_clip::base64(bytes);
 }
 class BitmapData final : public IDataObject {
     LONG refs = 1;
@@ -82,7 +106,7 @@ public:
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
 };
-inline bool place(HWND control, size_t at, const Picture& picture, LONG available = 0, DWORD identity = 0, bool undo = false)
+inline bool place(HWND control, size_t at, const Picture& picture, LONG available = 0, DWORD identity = 0, bool undo = false, LONG displayWidth = 0, LONG displayHeight = 0)
 {
     ComPtr<IRichEditOle> rich;
     if (!SendMessageW(control, EM_GETOLEINTERFACE, 0, reinterpret_cast<LPARAM>(rich.GetAddressOf()))) return false;
@@ -97,7 +121,7 @@ inline bool place(HWND control, size_t at, const Picture& picture, LONG availabl
     REOBJECT item{}; item.cbStruct = sizeof(item); item.cp = static_cast<LONG>(at);
     item.poleobj = object.Get(); item.polesite = site.Get(); item.pstg = storage.Get();
     item.dvaspect = DVASPECT_CONTENT; item.dwFlags = REO_BELOWBASELINE; item.dwUser = identity;
-    item.sizel = {picture.width, picture.height};
+    item.sizel = {displayWidth>0?displayWidth:picture.width, displayHeight>0?displayHeight:picture.height};
     if (available > 0 && item.sizel.cx > available) {
         item.sizel.cy = (std::max)(1, MulDiv(item.sizel.cy, available, item.sizel.cx));
         item.sizel.cx = available;
@@ -112,6 +136,15 @@ inline bool place(HWND control, size_t at, const Picture& picture, LONG availabl
     if (!ok) { SendMessageW(control, EM_SETSEL, at, at); SendMessageW(control, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L"!")); }
     SendMessageW(control, EM_SETREADONLY, readonly, 0);
     return ok;
+}
+inline bool reframe(IRichEditOle* rich,REOBJECT& item)
+{
+    ComPtr<IDataObject> data;if(!item.poleobj||FAILED(item.poleobj->QueryInterface(IID_PPV_ARGS(&data))))return false;
+    ComPtr<ILockBytes> bytes;ComPtr<IStorage> storage;ComPtr<IOleClientSite> site;
+    if(FAILED(rich->GetClientSite(&site))||FAILED(CreateILockBytesOnHGlobal(nullptr,TRUE,&bytes))||FAILED(StgCreateDocfileOnILockBytes(bytes.Get(),STGM_SHARE_EXCLUSIVE|STGM_CREATE|STGM_READWRITE,0,&storage)))return false;
+    ComPtr<IOleObject> object;FORMATETC format{CF_DIB,nullptr,DVASPECT_CONTENT,-1,TYMED_HGLOBAL};
+    if(FAILED(OleCreateStaticFromData(data.Get(),IID_IOleObject,OLERENDER_FORMAT,&format,site.Get(),storage.Get(),reinterpret_cast<void**>(object.GetAddressOf()))))return false;
+    item.poleobj=object.Get();item.polesite=site.Get();item.pstg=storage.Get();object->GetUserClassID(&item.clsid);OleSetContainedObject(object.Get(),TRUE);return SUCCEEDED(rich->InsertObject(&item));
 }
 inline std::wstring source_text(std::wstring text)
 {

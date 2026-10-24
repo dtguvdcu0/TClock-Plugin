@@ -6,8 +6,14 @@
 
 namespace tcard_edit {
 constexpr UINT_PTR subclass_id = 0x54434544;
-struct Editor { bool rich = false, composing = false; UINT save = 0; };
+struct Editor { bool rich = false, composing = false; UINT save = 0; std::wstring assetRoot; };
 inline LRESULT CALLBACK editor_proc(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data);
+inline Editor* state(HWND window)
+{
+    DWORD_PTR data=0;return GetWindowSubclass(window,editor_proc,subclass_id,&data)?reinterpret_cast<Editor*>(data):nullptr;
+}
+inline void set_assets(HWND window,const std::wstring& root){if(auto* value=state(window))value->assetRoot=root;}
+inline std::wstring assets(HWND window){const auto* value=state(window);return value?value->assetRoot:L"";}
 inline bool composing(HWND window)
 {
     return window && GetPropW(window, L"TCard.Editor.Composing") != nullptr;

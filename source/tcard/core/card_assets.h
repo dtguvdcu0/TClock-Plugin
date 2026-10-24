@@ -1,12 +1,14 @@
 #pragma once
 #include "card_clipboard.h"
 #include "card_storage.h"
+#include "card_rich.h"
 #include "../ui/card_images.h"
 #include <bcrypt.h>
 #include <set>
 #include <memory>
 #include <cstdint>
 #include <span>
+#include <tuple>
 #ifndef MD4C_USE_UTF16
 #define MD4C_USE_UTF16
 #endif
@@ -250,4 +252,44 @@ inline std::wstring externalize(const std::wstring& root, const std::wstring& so
     }
     return result;
 }
+// Replace only image-source attributes; preserve surrounding authored HTML and history bytes.
+template<class Resolve>
+inline std::wstring rich_images(const std::wstring& source,Resolve resolve)
+{
+    if(source.size()>tcard_clip::max_import)throw std::runtime_error("Rich image source too large");
+    std::wstring output=source;std::vector<std::tuple<size_t,size_t,std::wstring>> changes;
+    for(size_t at=0;(at=source.find(L'<',at))!=std::wstring::npos;){
+        if(source.compare(at,4,L"<!--")==0){const auto end=source.find(L"-->",at+4);if(end==std::wstring::npos)break;at=end+3;continue;}
+        size_t end=at+1;wchar_t quote=0;
+        for(;end<source.size();++end){const auto c=source[end];if(quote){if(c==quote)quote=0;}else if(c==L'\''||c==L'"')quote=c;else if(c==L'>')break;}
+        if(end==source.size())break;size_t cursor=at+1;while(cursor<end&&iswspace(source[cursor]))++cursor;
+        const size_t tag=cursor;while(cursor<end&&iswalnum(source[cursor]))++cursor;
+        if(tcard_clip::lower(source.substr(tag,cursor-tag))==L"img"){
+            while(cursor<end){while(cursor<end&&(iswspace(source[cursor])||source[cursor]==L'/'))++cursor;const size_t name=cursor;
+                while(cursor<end&&!iswspace(source[cursor])&&source[cursor]!=L'='&&source[cursor]!=L'/')++cursor;
+                const auto key=tcard_clip::lower(source.substr(name,cursor-name));while(cursor<end&&iswspace(source[cursor]))++cursor;
+                if(cursor>=end)break;if(source[cursor]!=L'='){if(cursor==name)++cursor;continue;}++cursor;while(cursor<end&&iswspace(source[cursor]))++cursor;
+                if(cursor>=end)break;const auto delimiter=source[cursor]==L'\''||source[cursor]==L'"'?source[cursor++]:0;const size_t first=cursor;
+                while(cursor<end&&(delimiter?source[cursor]!=delimiter:!iswspace(source[cursor])))++cursor;
+                if(key==L"src"){const auto uri=tcard_rich::decode(std::wstring_view(source).substr(first,cursor-first));auto next=resolve(uri);
+                    if(next!=uri){if(changes.size()>=256)throw std::runtime_error("Too many rich image replacements");changes.emplace_back(first,cursor-first,tcard_rich::escape(next));}}
+                if(delimiter&&cursor<end)++cursor;
+            }
+        }
+        at=end+1;
+    }
+    for(auto it=changes.rbegin();it!=changes.rend();++it)output.replace(std::get<0>(*it),std::get<1>(*it),std::get<2>(*it));return output;
+}
+inline std::wstring externalize_rich(const std::wstring& root,const std::wstring& source)
+{
+    if(source.find(L"data:image/")==std::wstring::npos)return source;
+    std::map<std::wstring,std::wstring> cache;
+    return rich_images(source,[&](const std::wstring& uri){
+        if(!uri.starts_with(L"data:image/"))return uri;
+        const auto bytes=tcard_clip::image_bytes(uri);const auto key=hash(bytes);if(key.empty())throw std::runtime_error("Invalid embedded rich image");
+        const auto found=cache.find(key);if(found!=cache.end())return found->second;
+        auto name=image(root,uri);if(name.empty())throw std::runtime_error("Rich image could not be saved");cache.emplace(key,name);return name;
+    });
+}
+
 }

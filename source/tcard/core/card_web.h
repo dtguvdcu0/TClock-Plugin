@@ -235,7 +235,7 @@ inline std::wstring css_text(const Tree& tree)
     return css;
 }
 inline tcard_clip::Clip import(const tcard_clip::Clip& clip,const std::atomic_bool& cancelled,
-    const tcard_clip::ImageResolver& images={},const tcard_clip::ImageResolver& pages={})
+    const tcard_clip::ImageResolver& images={},const tcard_clip::ImageResolver& pages={},const tcard_clip::ImageResolver& store={})
 {
     if(clip.htmlSource.empty())return clip;
     const auto deadline=GetTickCount64()+60000;
@@ -272,7 +272,8 @@ inline tcard_clip::Clip import(const tcard_clip::Clip& clip,const std::atomic_bo
         if(run.image.empty())continue;
         auto address=run.image;
         std::wstring uri;
-        if(address.starts_with(L"data:image/")){
+        if(store&&(tcard_asset::relative(address,true)||address.starts_with(L"data:image/"))){uri=store(address);
+        }else if(address.starts_with(L"data:image/")){
             if(!tcard_image::decode(address).dib.empty())uri=address;
         }else{
             address=tcard_clip::url(address,clip.url);
@@ -285,7 +286,8 @@ inline tcard_clip::Clip import(const tcard_clip::Clip& clip,const std::atomic_bo
                 if(found!=cache.end())uri=found->second;
             }
         }
-        if(!uri.empty()&&uri.size()<=budget&&!tcard_image::decode(uri).dib.empty()){
+        if(store&&uri.starts_with(L"data:image/"))uri=store(uri);
+        if(!uri.empty()&&uri.size()<=budget&&((store&&tcard_asset::relative(uri,true))||!tcard_image::decode(uri).dib.empty())){
             budget-=uri.size();run.image=std::move(uri);
         }else{
             missing=true;run.text=run.alt.empty()?L"[Image unavailable]":L"["+run.alt+L"]";
