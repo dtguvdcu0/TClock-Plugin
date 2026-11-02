@@ -74,6 +74,8 @@ typedef struct TC_PLUGIN_EXTENSION {
 #define TC_PLUGIN_RUNTIME_ID L"tclock.runtime/1"
 #define TC_HOST_REGISTRY_ID L"tclock.host.registry/1"
 #define TC_HOST_SERVICES_ID L"tclock.host.services/1"
+#define TC_HOST_FEATURES_ID L"tclock.host.features/1"
+#define TC_FEATURE_INTERFACE_CHARS 96
 #define TC_COLOR_TRANSFORM 0u
 #define TC_COLOR_REPLACE 1u
 #define TC_TEXT_DATE 2u
@@ -136,6 +138,21 @@ typedef struct TC_HOST_REGISTRY {
     HRESULT (WINAPI *color)(void* plugin, const TC_COLOR_REGISTRATION* entry, TC_REGISTRATION* token);
     HRESULT (WINAPI *remove)(void* plugin, TC_REGISTRATION token);
 } TC_HOST_REGISTRY;
+
+/* Each table has a separately versioned interface ID and is interpreted only by its host adapter. */
+typedef struct TC_FEATURE_REGISTRATION {
+    UINT size;
+    LPCWSTR id;
+    LPCWSTR interface_id;
+    INT priority;
+    const void* table;
+    void* user;
+} TC_FEATURE_REGISTRATION;
+
+typedef struct TC_HOST_FEATURES {
+    UINT size;
+    HRESULT (WINAPI *add)(void* plugin, const TC_FEATURE_REGISTRATION* entry, TC_REGISTRATION* token);
+} TC_HOST_FEATURES;
 
 typedef struct TC_HOST_SERVICES {
     UINT size;
