@@ -88,7 +88,7 @@ static void card_layout_tools(TCARD_WUI_HOST host,int width,int height)
  }
  HWND status=GetDlgItem(host->window,kToolStatus);
  if(visible)for(int n=0;n<count;++n){
-  int i=ids[n],w=card_px(host,i==6?48:i==11?58:host->markdown?22:26);
+  int i=ids[n],w=tcard_tools::width(GetDlgItem(host->window,kToolFirst+i),i);
   card_move_control(GetDlgItem(host->window,kToolFirst+i),x,top,w,card_px(host,30));x+=w;
  }
  const bool showStatus=visible&&width-x>=card_px(host,56);

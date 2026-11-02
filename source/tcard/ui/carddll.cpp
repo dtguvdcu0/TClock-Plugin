@@ -520,7 +520,10 @@ static LRESULT CALLBACK card_wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LP
                 return TRUE;
             }
             if (item->CtlID != kEditClose && item->CtlID != kEditMinimize && item->CtlID != kMenuButton && !(item->CtlID>=kToolFirst&&item->CtlID<kToolFirst+kToolCount) && item->CtlID != kEditSave && item->CtlID != kEditCancel && item->CtlID != kEditAppearance) break;
-            if(item->CtlID==kMenuButton||(item->CtlID>=kToolFirst&&item->CtlID<kToolFirst+kToolCount)){
+            if(item->CtlID>=kToolFirst&&item->CtlID<kToolFirst+kToolCount){
+                tcard_tools::paint(*item,static_cast<int>(item->CtlID-kToolFirst),host->state.backColor,host->state.textColor);return TRUE;
+            }
+            if(item->CtlID==kMenuButton){
                 POINT cursor{};GetCursorPos(&cursor);ScreenToClient(item->hwndItem,&cursor);
                 const bool hot=PtInRect(&item->rcItem,cursor)||(item->itemState&ODS_SELECTED);
                 HBRUSH paper=CreateSolidBrush(tcard_ui::shade_color(host->state.backColor,hot?0.91f:1.0f));

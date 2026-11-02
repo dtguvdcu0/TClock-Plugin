@@ -1126,7 +1126,7 @@ void card_editor_tools(int height,int contentX)
         const HWND button=GetDlgItem(g_main,kEditorToolFirst+i);
         if(((GetWindowLongPtrW(button,GWL_STYLE)&WS_VISIBLE)!=0)!=shown)ShowWindow(button,shown?SW_SHOWNA:SW_HIDE);
     }
-    if(visible)for(const int i:ids){const int w=i==6?48:i==11?58:g_editor_markdown?22:26;
+    if(visible)for(const int i:ids){const int w=tcard_tools::width(GetDlgItem(g_main,kEditorToolFirst+i),i);
         MoveWindow(GetDlgItem(g_main,kEditorToolFirst+i),x,height-38,w,30,TRUE);x+=w;}
 }
 void card_editor_command(int tool)
@@ -2013,6 +2013,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                     (g_editing ? g_preview_color : parse_color(g_cards[g_visible_indices[static_cast<size_t>(selected)]].color)) == choice->color;
                 tcard_ui::paint_swatch(item, choice->color, active, tile_ink(choice->color));
                 return TRUE;
+            }
+            if(item.CtlID>=static_cast<UINT>(kEditorToolFirst)&&item.CtlID<static_cast<UINT>(kEditorToolFirst+tcard_tools::count)){
+                tcard_tools::paint(item,static_cast<int>(item.CtlID-kEditorToolFirst),g_preview_color,tile_ink(g_preview_color));return TRUE;
             }
             const COLORREF paper = item.CtlID == kViewButton || item.CtlID == kNew || item.CtlID == kDelete || item.CtlID == kClearSearch || item.CtlID == kSortField || item.CtlID == kGlobalSettings ? RGB(246, 245, 242) : g_preview_color;
             tcard_ui::paint_button(item, paper, tile_ink(paper), g_button_font ? g_button_font : g_ui_font, item.CtlID == kSave || item.CtlID == kNew, item.CtlID == kViewButton && g_trash_mode);
