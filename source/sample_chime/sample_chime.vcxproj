@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{8E3F671E-C69B-4688-A1DE-62FCB8137E40}</ProjectGuid><Keyword>Win32Proj</Keyword><RootNamespace>SampleChime</RootNamespace></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <!-- このプロジェクトではDLLを作ります。 -->
+  <PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <!-- 生成したDLLはout\x64\<構成>に出力します。利用時はTClockのpluginsへ配置します。 -->
+    <OutDir>$(MSBuildThisFileDirectory)out\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(OutDir)obj\sample-chime\</IntDir><TargetName>SampleChime</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <!-- 日本語コメントを含むソースをUTF-8としてコンパイルします。 -->
+    <ClCompile><WarningLevel>Level4</WarningLevel><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary><PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <!-- 本体に公開する入口の名前を.defで指定します。 -->
+    <Link><ModuleDefinitionFile>sample_chime.def</ModuleDefinitionFile><SubSystem>Windows</SubSystem></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="sample_chime.c" />
+    <ClInclude Include="..\common\plugin_api.h" /><ClInclude Include="..\common\chime_api.h" /><ClInclude Include="..\common\page_api.h" /><ClInclude Include="sample_chime.h" />
+    <ClInclude Include="..\common\plugin_resources.h" /><None Include="sample_chime.def" /></ItemGroup>
+  <!-- 一覧の名前や説明文を.rcからDLLに埋め込みます。 -->
+  <ItemGroup><ResourceCompile Include="sample_chime.rc" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

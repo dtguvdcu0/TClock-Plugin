@@ -1,0 +1,77 @@
+/*
+ * プラグイン一覧に表示する名前と説明文、DLLの検出に使う情報を定義します。
+ * 日本語を扱えるよう、このファイルはUTF-8で保存します。
+ */
+#pragma code_page(65001)
+#include <windows.h>
+#include "../common/plugin_resources.h"
+#include "../common/plugin_version.h"
+#include "sample_chime.h"
+
+/* 「時報」の代わりに表示する設定ページです。文字は表示言語に合わせてsample_chime.cで設定します。 */
+SC_PAGE DIALOGEX 0, 0, 222, 230
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "MS UI Gothic", 0, 0, 0x1
+BEGIN
+    CONTROL "",SC_QUARTERS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,6,210,11
+    CONTROL "",SC_BLINK,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,6,22,210,11
+    LTEXT "",SC_NOTE,6,44,210,48
+END
+
+
+/* 設定画面の説明欄に表示する文章です。英語と日本語を用意します。 */
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+    TC_PLUGIN_DESCRIPTION_ID "Replaces the chime decision: the primary sound once per hour count with a blink every hour, and the secondary sound at :15, :30 and :45."
+END
+
+LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
+STRINGTABLE
+BEGIN
+    TC_PLUGIN_DESCRIPTION_ID "時報の判定を置き換えます。毎正時に時の数だけ主時報音を鳴らして点滅し、15分・30分・45分に副時報音を鳴らします。"
+END
+
+/* 検出用のIDと一覧の名前は、表示言語によらず共通にします。 */
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+STRINGTABLE
+BEGIN
+    /* コロンの後のIDを、C側の sc_info と揃えます。 */
+    TC_PLUGIN_HEADER_ID "tclock.plugin/1:sample.chime"
+
+    /* プラグイン一覧に表示する名前です。 */
+    TC_PLUGIN_NAME_ID "SampleChime"
+
+    /* 個別設定がないことを本体に伝え、設定ボタンを無効にします。 */
+    TC_PLUGIN_SETTINGS_HINT_ID "none"
+END
+
+#define SAMPLE_VERSION TC_VERSION_VALUE(SAMPLE_CHIME_VERSION)
+#define SAMPLE_VERSION_TEXT TC_VERSION_TEXT(SAMPLE_CHIME_VERSION)
+
+1 VERSIONINFO
+ FILEVERSION SAMPLE_VERSION
+ PRODUCTVERSION SAMPLE_VERSION
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "SampleChime plugin\0"
+            VALUE "FileVersion", SAMPLE_VERSION_TEXT
+            VALUE "InternalName", "SampleChime\0"
+            VALUE "OriginalFilename", "SampleChime.dll\0"
+            VALUE "ProductName", "SampleChime\0"
+            VALUE "ProductVersion", SAMPLE_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -1,0 +1,65 @@
+/*
+ * プラグイン一覧に表示する名前と説明文、DLLの検出に使う情報を定義します。
+ * 日本語を扱えるよう、このファイルはUTF-8で保存します。
+ */
+#pragma code_page(65001)
+#include <windows.h>
+#include "../common/plugin_resources.h"
+#include "../common/plugin_version.h"
+
+/* 設定画面の説明欄に表示する文章です。英語と日本語を用意します。 */
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+    TC_PLUGIN_DESCRIPTION_ID "Draws the clock text itself: the configured text color, anti-aliased, on a translucent rounded blue band."
+END
+
+LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
+STRINGTABLE
+BEGIN
+    TC_PLUGIN_DESCRIPTION_ID "時計の文字を自分で描きます。設定の文字色で、半透明の角丸の青い帯の上に描きます。"
+END
+
+/* 検出用のIDと一覧の名前は、表示言語によらず共通にします。 */
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+STRINGTABLE
+BEGIN
+    /* コロンの後のIDを、C側の sr_info と揃えます。 */
+    TC_PLUGIN_HEADER_ID "tclock.plugin/1:sample.render"
+
+    /* プラグイン一覧に表示する名前です。 */
+    TC_PLUGIN_NAME_ID "SampleRender"
+
+    /* 個別設定がないことを本体に伝え、設定ボタンを無効にします。 */
+    TC_PLUGIN_SETTINGS_HINT_ID "none"
+END
+
+#define SAMPLE_VERSION TC_VERSION_VALUE(SAMPLE_RENDER_VERSION)
+#define SAMPLE_VERSION_TEXT TC_VERSION_TEXT(SAMPLE_RENDER_VERSION)
+
+1 VERSIONINFO
+ FILEVERSION SAMPLE_VERSION
+ PRODUCTVERSION SAMPLE_VERSION
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "SampleRender plugin\0"
+            VALUE "FileVersion", SAMPLE_VERSION_TEXT
+            VALUE "InternalName", "SampleRender\0"
+            VALUE "OriginalFilename", "SampleRender.dll\0"
+            VALUE "ProductName", "SampleRender\0"
+            VALUE "ProductVersion", SAMPLE_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

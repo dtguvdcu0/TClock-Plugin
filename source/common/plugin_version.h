@@ -5,6 +5,9 @@
 #define TCAP_VERSION (1,0,0,0)
 #define TCARD_VERSION (1,0,0,0)
 #define TCYC_VERSION (1,0,0,0)
+#define SAMPLE_FORMATTER_VERSION (1,0,0,0)
+#define SAMPLE_CHIME_VERSION (1,0,0,0)
+#define SAMPLE_RENDER_VERSION (1,0,0,0)
 
 // Tuple expansion works with the Windows resource compiler's traditional preprocessor.
 #define TC_VERSION_PARTS(major, minor, patch, revision) major,minor,patch,revision
