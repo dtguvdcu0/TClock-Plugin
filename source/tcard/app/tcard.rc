@@ -3,6 +3,9 @@
 
 1 ICON "../icon3.ico"
 
+// Common Controls 6 dependency, activated only around the settings dialogs (SettingsTheme).
+3 24 "tcard-settings.manifest"
+
 1 VERSIONINFO
 FILEVERSION TC_VERSION_VALUE(TCARD_VERSION)
 PRODUCTVERSION TC_VERSION_VALUE(TCARD_VERSION)

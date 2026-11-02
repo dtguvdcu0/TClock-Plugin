@@ -18,81 +18,91 @@ std::wstring card_sync_label()
     std::wstring text=tcard_text(key.c_str(),fallback);
     return text;
 }
+// One-line status fields drop the sentence-final period; message boxes keep card_sync_label().
+std::wstring card_sync_short()
+{
+    auto text=card_sync_label();
+    while(!text.empty()&&(text.back()==L'\u3002'||text.back()==L'.'))text.pop_back();
+    return text;
+}
 
 #include "card_source_dialog.h"
 
+void card_fit_scroll(HWND edit);
 // Completion-driven allow rules stay in the dialog draft until Save.
 void card_sync_allow(HWND hwnd)
 {
     tcard_bridge::Settings edited;edited.listenPort=GetDlgItemInt(hwnd,1703,nullptr,FALSE);edited.peerPort=0;
     edited.peers=window_text(GetDlgItem(hwnd,1715));edited.whitelist=window_text(GetDlgItem(hwnd,1717));
-    if(tcard_bridge::AddPeerRules(edited)&&edited.whitelist!=window_text(GetDlgItem(hwnd,1717)))SetDlgItemTextW(hwnd,1717,edited.whitelist.c_str());
-}
-int card_measure_text(HWND hwnd,int id,int minimum)
-{
-    RECT textRect{0,0,304,12};MapDialogRect(hwnd,&textRect);const int baseHeight=textRect.bottom;
-    HDC dc=GetDC(hwnd);if(!dc||baseHeight<=0){if(dc)ReleaseDC(hwnd,dc);return minimum;}
-    const auto font=reinterpret_cast<HFONT>(SendDlgItemMessageW(hwnd,id,WM_GETFONT,0,0));
-    const auto old=font?SelectObject(dc,font):nullptr;const auto text=window_text(GetDlgItem(hwnd,id));
-    DrawTextW(dc,text.c_str(),static_cast<int>(text.size()),&textRect,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);
-    if(old)SelectObject(dc,old);ReleaseDC(hwnd,dc);
-    return (std::max)(minimum,((static_cast<int>(textRect.bottom)*12+baseHeight-1)/baseHeight+3)/4*4);
-}
-void card_wrap_path(HWND hwnd)
-{
-    const HWND label=GetDlgItem(hwnd,1711);auto path=window_text(label);
-    path.erase(std::remove(path.begin(),path.end(),L'\r'),path.end());path.erase(std::remove(path.begin(),path.end(),L'\n'),path.end());
-    RECT rect{};GetClientRect(label,&rect);HDC dc=GetDC(label);if(!dc||rect.right<=0){if(dc)ReleaseDC(label,dc);return;}
-    const auto font=reinterpret_cast<HFONT>(SendMessageW(label,WM_GETFONT,0,0));const auto old=font?SelectObject(dc,font):nullptr;
-    std::wstring wrapped;size_t offset=0;
-    while(offset<path.size()){
-        int fitted=0;SIZE size{};const auto remaining=path.size()-offset;
-        if(!GetTextExtentExPointW(dc,path.data()+offset,static_cast<int>(remaining),rect.right,&fitted,nullptr,&size)){wrapped=path;break;}
-        size_t count=(std::max)(size_t(1),static_cast<size_t>(fitted));
-        if(count<remaining){
-            const auto separator=path.find_last_of(L"\\/",offset+count-1);
-            if(separator!=std::wstring::npos&&separator>=offset+count/2)count=separator+1-offset;
-            if(count&&path[offset+count-1]>=0xd800&&path[offset+count-1]<=0xdbff&&path[offset+count]>=0xdc00&&path[offset+count]<=0xdfff)--count;
-            if(!count)count=(std::min)(size_t(2),remaining);
-        }
-        if(!wrapped.empty())wrapped+=L"\r\n";wrapped.append(path,offset,count);offset+=count;
+    if(tcard_bridge::AddPeerRules(edited)&&edited.whitelist!=window_text(GetDlgItem(hwnd,1717))){
+        // Multiline WM_SETTEXT sends no EN_CHANGE; refresh the scrollbar and the row count directly.
+        SetDlgItemTextW(hwnd,1717,edited.whitelist.c_str());card_fit_scroll(GetDlgItem(hwnd,1717));InvalidateRect(GetDlgItem(hwnd,1716),nullptr,FALSE);
     }
-    if(old)SelectObject(dc,old);ReleaseDC(label,dc);
-    if(window_text(label)!=wrapped)SetWindowTextW(label,wrapped.c_str());
+}
+// Disclosure rows for the allow/block lists: chevron, caption and entry count, drawn flat on the dialog paper.
+size_t card_count_lines(HWND edit)
+{
+    size_t count=0;bool content=false;
+    for(const wchar_t ch:window_text(edit)){
+        if(ch==L'\n'){count+=content;content=false;}
+        else if(ch!=L'\r'&&ch!=L' '&&ch!=L'\t')content=true;
+    }
+    return count+content;
+}
+void card_draw_toggle(HWND hwnd,const DRAWITEMSTRUCT& item)
+{
+    const HDC dc=item.hDC;const RECT area=item.rcItem;const UINT dpi=GetDpiForWindow(item.hwndItem);
+    SetDCBrushColor(dc,tcard_ui::settings_paper);FillRect(dc,&area,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    RECT line{area.left,area.bottom-1,area.right,area.bottom};SetDCBrushColor(dc,RGB(222,220,215));FillRect(dc,&line,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    const bool white=item.CtlID==1716;const bool open=GetPropW(hwnd,white?L"TCardSync.WhiteOpen":L"TCardSync.BlackOpen")!=nullptr;
+    const COLORREF ink=(item.itemState&ODS_DISABLED)?GetSysColor(COLOR_GRAYTEXT):tcard_ui::settings_ink;
+    const int unit=tcard_ui::dip_to_px(4,dpi),centerX=area.left+tcard_ui::dip_to_px(9,dpi),centerY=(area.top+area.bottom)/2;
+    HPEN pen=CreatePen(PS_SOLID,(std::max)(2,tcard_ui::dip_to_px(2,dpi)),ink);const auto oldPen=SelectObject(dc,pen);
+    if(open){POINT points[]{{centerX-unit,centerY-unit/2},{centerX,centerY+unit/2},{centerX+unit,centerY-unit/2}};Polyline(dc,points,3);}
+    else{POINT points[]{{centerX-unit/2,centerY-unit},{centerX+unit/2,centerY},{centerX-unit/2,centerY+unit}};Polyline(dc,points,3);}
+    SelectObject(dc,oldPen);DeleteObject(pen);
+    const auto font=reinterpret_cast<HFONT>(SendMessageW(item.hwndItem,WM_GETFONT,0,0));const auto oldFont=font?SelectObject(dc,font):nullptr;
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,ink);
+    const size_t entries=card_count_lines(GetDlgItem(hwnd,white?1717:1719));
+    const std::wstring count=entries?std::to_wstring(entries)+L" "+tcard_text(L"settings.entries",L"entries"):std::wstring(tcard_text(L"sync.list_none",L"None"));
+    RECT text{area.left+tcard_ui::dip_to_px(20,dpi),area.top,area.right-tcard_ui::dip_to_px(6,dpi),area.bottom-1};
+    SetTextColor(dc,(item.itemState&ODS_DISABLED)?ink:kSettingsNote);
+    DrawTextW(dc,count.c_str(),-1,&text,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+    SetTextColor(dc,ink);
+    DrawTextW(dc,tcard_text(white?L"sync.whitelist":L"sync.blacklist",white?L"Allow list (IPv4 / CIDR)":L"Block list (overrides the allow list)"),-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);
+    if(oldFont)SelectObject(dc,oldFont);
+    if(item.itemState&ODS_FOCUS){RECT focus=area;InflateRect(&focus,-1,-1);focus.bottom-=1;DrawFocusRect(dc,&focus);}
+}
+void card_fit_scroll(HWND edit)
+{
+    if(!edit)return;RECT area{};SendMessageW(edit,EM_GETRECT,0,reinterpret_cast<LPARAM>(&area));
+    HDC dc=GetDC(edit);if(!dc)return;const auto font=reinterpret_cast<HFONT>(SendMessageW(edit,WM_GETFONT,0,0));
+    const auto old=font?SelectObject(dc,font):nullptr;TEXTMETRICW metrics{};const bool measured=GetTextMetricsW(dc,&metrics)!=FALSE;
+    if(old)SelectObject(dc,old);ReleaseDC(edit,dc);if(!measured||metrics.tmHeight<=0)return;
+    const LRESULT lines=SendMessageW(edit,EM_GETLINECOUNT,0,0);const LONG visible=(std::max)(1L,(area.bottom-area.top)/metrics.tmHeight);
+    ShowScrollBar(edit,SB_VERT,lines>visible);
 }
 void card_sync_layout(HWND hwnd)
 {
-    card_wrap_path(hwnd);int y=120;
+    const auto move=[&](int id,int x,int top,int width,int height){
+        RECT rect{x,top,x+width,top+height};MapDialogRect(hwnd,&rect);
+        SetWindowPos(GetDlgItem(hwnd,id),nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOZORDER|SWP_NOACTIVATE);
+    };
+    // Label column x 8 (76 wide), control column x 88 to 312.
+    int y=84;
     for(const auto& row:{std::pair<int,int>{1716,1717},{1718,1719}}){
         const bool open=GetPropW(hwnd,row.first==1716?L"TCardSync.WhiteOpen":L"TCardSync.BlackOpen")!=nullptr;
-        const auto move=[&](int id,int top,int height){RECT rect{8,top,312,top+height};MapDialogRect(hwnd,&rect);SetWindowPos(GetDlgItem(hwnd,id),nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOZORDER|SWP_NOACTIVATE);};
-        const std::wstring caption=(open?L"\u25bc ":L"\u25b6 ")+std::wstring(tcard_text(row.first==1716?L"sync.whitelist":L"sync.blacklist",row.first==1716?L"Whitelist (IPv4 or CIDR)":L"Blacklist (takes priority)"));
-        SetDlgItemTextW(hwnd,row.first,caption.c_str());move(row.first,y,16);y+=16;
-        ShowWindow(GetDlgItem(hwnd,row.second),open?SW_SHOWNA:SW_HIDE);if(open){move(row.second,y,32);y+=40;}
+        move(row.first,8,y,304,16);InvalidateRect(GetDlgItem(hwnd,row.first),nullptr,TRUE);y+=16;
+        ShowWindow(GetDlgItem(hwnd,row.second),open?SW_SHOWNA:SW_HIDE);if(open){move(row.second,88,y+3,224,32);card_fit_scroll(GetDlgItem(hwnd,row.second));y+=39;}
     }
-    const int shift=272-y;
-    const int helpHeight=card_measure_text(hwnd,1706,24);
-    const int pathHeight=card_measure_text(hwnd,1711,12),statusHeight=card_measure_text(hwnd,1712,12);
-    const int statusTop=360+pathHeight+4,buttonsTop=statusTop+statusHeight+4;
-    const int extra=helpHeight-24;
-    struct Row{int id,x,y,w,h;};
-    for(const auto& row:{Row{1733,8,272,304,14},{1706,8,288,304,24},{1730,8,320,100,16},{1731,116,320,88,16},{1732,212,320,100,16},
-        {1710,8,344,304,12},{1711,8,360,304,pathHeight},{1712,8,statusTop,304,statusHeight},{IDOK,204,buttonsTop,52,16},{IDCANCEL,260,buttonsTop,52,16}}){
-        const int top=row.y-shift+(row.y>288?extra:0),height=row.id==1706?helpHeight:row.h;
-        RECT rect{row.x,top,row.x+row.w,top+height};MapDialogRect(hwnd,&rect);
-        SetWindowPos(GetDlgItem(hwnd,row.id),nullptr,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOZORDER|SWP_NOACTIVATE);
-    }
-    RECT desired{0,0,320,buttonsTop+24-shift+extra},client{},window{};MapDialogRect(hwnd,&desired);GetClientRect(hwnd,&client);GetWindowRect(hwnd,&window);
+    y+=6;move(1733,8,y,304,14);y+=22;
+    // Secondary commands are 14 DLU tall, matching the edit and combo fields; Save/Cancel stay 16 DLU.
+    move(1730,8,y,96,14);move(1731,112,y,96,14);move(1732,216,y,96,14);y+=22;
+    move(1710,8,y,76,14);move(1711,88,y,224,14);y+=24;
+    move(IDOK,204,y,52,16);move(IDCANCEL,260,y,52,16);
+    RECT desired{0,0,320,y+24},client{},window{};MapDialogRect(hwnd,&desired);GetClientRect(hwnd,&client);GetWindowRect(hwnd,&window);
     SetWindowPos(hwnd,nullptr,0,0,window.right-window.left,desired.bottom+window.bottom-window.top-client.bottom,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     InvalidateRect(hwnd,nullptr,TRUE);
-}
-void card_copy_folder(HWND hwnd)
-{
-    const auto text=g_sync_client.Profile();const auto bytes=(text.size()+1)*sizeof(wchar_t);
-    HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,bytes);if(!memory)return;
-    void* value=GlobalLock(memory);if(!value){GlobalFree(memory);return;}memcpy(value,text.c_str(),bytes);GlobalUnlock(memory);
-    if(!OpenClipboard(hwnd)){GlobalFree(memory);return;}
-    if(!EmptyClipboard()||!SetClipboardData(CF_UNICODETEXT,memory))GlobalFree(memory);CloseClipboard();
 }
 bool card_sync_save(HWND hwnd)
 {
@@ -305,7 +315,9 @@ void card_paint_cue(HWND hwnd,HDC dc)
     const auto font=reinterpret_cast<HFONT>(SendMessageW(hwnd,WM_GETFONT,0,0));
     const auto previous=font?SelectObject(dc,font):nullptr;
     const auto color=SetTextColor(dc,GetSysColor(COLOR_GRAYTEXT));const auto mode=SetBkMode(dc,TRANSPARENT);
-    DrawTextW(dc,L"192.168.1.10\r\n192.168.1.20:49022",-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX);
+    std::wstring example=tcard_text(L"sync.peers_example",L"e.g. 192.168.1.10\ne.g. 192.168.1.20:49022");
+    for(size_t at=example.find(L"\\n");at!=std::wstring::npos;at=example.find(L"\\n",at+2))example.replace(at,2,L"\r\n");
+    DrawTextW(dc,example.c_str(),-1,&rect,DT_LEFT|DT_TOP|DT_NOPREFIX);
     SetBkMode(dc,mode);SetTextColor(dc,color);if(previous)SelectObject(dc,previous);
 }
 LRESULT CALLBACK card_handle_cue(HWND hwnd,UINT message,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR)
@@ -319,12 +331,22 @@ LRESULT CALLBACK card_handle_cue(HWND hwnd,UINT message,WPARAM wp,LPARAM lp,UINT
 
 void card_refresh_status(HWND hwnd)
 {
-    const auto text=card_sync_label();if(window_text(GetDlgItem(hwnd,1712))==text)return;
-    SetDlgItemTextW(hwnd,1712,text.c_str());card_sync_layout(hwnd);
+    const auto text=card_sync_short();if(window_text(GetDlgItem(hwnd,1712))==text)return;
+    SetDlgItemTextW(hwnd,1712,text.c_str());
 }
 INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
     if(message==WM_DESTROY){RemovePropW(hwnd,L"TCardSync.WhiteOpen");RemovePropW(hwnd,L"TCardSync.BlackOpen");}
+    if(message==WM_DRAWITEM&&lp){
+        const auto& item=*reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+        if(item.CtlType==ODT_BUTTON&&(item.CtlID==1716||item.CtlID==1718)){card_draw_toggle(hwnd,item);return TRUE;}
+    }
+    if(message==WM_CTLCOLORSTATIC&&GetDlgCtrlID(reinterpret_cast<HWND>(lp))==1712){
+        const INT_PTR brush=tcard_ui::paint_settings(hwnd,message,wp,lp);const auto& key=g_sync_client.status;
+        SetTextColor(reinterpret_cast<HDC>(wp),key==L"sync.ready"?RGB(31,95,34):key==L"sync.off"||key==L"sync.starting"||key==L"sync.stopping"?kSettingsNote:
+            key==L"sync.pending"||key==L"sync.waiting_edit"?tcard_ui::settings_ink:kSettingsError);
+        return brush;
+    }
     if(const INT_PTR painted=tcard_ui::paint_settings(hwnd,message,wp,lp))return painted;
     if(message==WM_INITDIALOG){
         SetWindowTextW(hwnd,tcard_text(L"sync.settings",L"Sync settings"));const auto font=SendMessageW(hwnd,WM_GETFONT,0,0);
@@ -337,45 +359,39 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         auto settings=tcard_bridge::ReadSettings(preferences_path());
         if(!settings.hasPolicy)settings.whitelist=g_sync_client.DefaultWhitelist();
         settings.peers=tcard_bridge::EditPeers(settings);settings.peerPort=0;
-        control(L"STATIC",tcard_text(L"sync.local",L"Synchronize on your local LAN."),0,1700,8,8,304,12);
-        control(L"BUTTON",tcard_text(L"sync.enable",L"Enable synchronization"),WS_TABSTOP|BS_AUTOCHECKBOX,1701,8,28,304,14);
+        // Enable switch and live status share the first row; explanatory captions are intentionally omitted.
+        control(L"BUTTON",tcard_text(L"sync.enable",L"Enable synchronization"),WS_TABSTOP|BS_AUTOCHECKBOX,1701,8,8,96,14);
         CheckDlgButton(hwnd,1701,settings.enabled?BST_CHECKED:BST_UNCHECKED);
-        control(L"STATIC",tcard_text(L"sync.listen_port",L"Connection port"),SS_CENTERIMAGE,1702,8,44,84,14);
-        control(L"EDIT",std::to_wstring(settings.listenPort).c_str(),WS_TABSTOP|ES_NUMBER|ES_AUTOHSCROLL,1703,96,44,64,14);
-        control(L"STATIC",tcard_text(L"sync.port_help",L"This device's listening port"),SS_CENTERIMAGE,1704,168,44,144,14);
-        control(L"STATIC",tcard_text(L"sync.peers",L"Priority destinations"),0,1714,8,64,304,16);
+        control(L"STATIC",card_sync_short().c_str(),SS_RIGHT|SS_CENTERIMAGE|SS_ENDELLIPSIS|SS_NOPREFIX,1712,108,8,204,14);
+        control(L"STATIC",tcard_text(L"sync.listen_port",L"Listening port"),SS_CENTERIMAGE,1702,8,28,76,14);
+        control(L"EDIT",std::to_wstring(settings.listenPort).c_str(),WS_TABSTOP|ES_NUMBER|ES_AUTOHSCROLL,1703,88,28,44,14);
+        control(L"STATIC",tcard_text(L"sync.peers",L"Priority destinations"),SS_CENTERIMAGE,1714,8,46,76,14);
         const DWORD listStyle=WS_TABSTOP|ES_MULTILINE|ES_WANTRETURN|ES_AUTOVSCROLL|WS_VSCROLL;
-        const auto peers=control(L"EDIT",tcard_bridge::EditLines(settings.peers).c_str(),listStyle,1715,8,84,304,32);
+        const auto peers=control(L"EDIT",tcard_bridge::EditLines(settings.peers).c_str(),listStyle,1715,88,46,224,32);
         SetWindowSubclass(peers,card_handle_cue,1,0);
-        control(L"BUTTON",L"",WS_TABSTOP|BS_PUSHBUTTON|BS_LEFT|BS_FLAT,1716,8,160,304,16);
-        control(L"EDIT",tcard_bridge::EditLines(settings.whitelist).c_str(),listStyle,1717,8,176,304,32);
-        control(L"BUTTON",L"",WS_TABSTOP|BS_PUSHBUTTON|BS_LEFT|BS_FLAT,1718,8,216,304,16);
-        control(L"EDIT",tcard_bridge::EditLines(settings.blacklist).c_str(),listStyle,1719,8,232,304,32);
-        control(L"BUTTON",tcard_text(L"sync.share_peers",L"Share and use endpoints with authenticated sync partners"),WS_TABSTOP|BS_AUTOCHECKBOX,1733,8,272,304,14);
+        control(L"EDIT",tcard_bridge::EditLines(settings.whitelist).c_str(),listStyle,1717,88,104,224,32);
+        control(L"EDIT",tcard_bridge::EditLines(settings.blacklist).c_str(),listStyle,1719,88,160,224,32);
+        control(L"BUTTON",tcard_text(L"sync.whitelist",L"Allow list (IPv4 / CIDR)"),WS_TABSTOP|BS_OWNERDRAW,1716,8,84,304,16);
+        control(L"BUTTON",tcard_text(L"sync.blacklist",L"Block list (overrides the allow list)"),WS_TABSTOP|BS_OWNERDRAW,1718,8,140,304,16);
+        control(L"BUTTON",tcard_text(L"sync.share_peers",L"Share and use endpoints with authenticated sync partners"),WS_TABSTOP|BS_AUTOCHECKBOX,1733,8,200,304,14);
         CheckDlgButton(hwnd,1733,settings.sharePeers?BST_CHECKED:BST_UNCHECKED);
-        std::wstring sharingHelp=tcard_text(L"sync.share_help",L"Exchange endpoint information with sync partners and use it as candidates.\nEndpoints are valid for up to 30 days. No notes are transferred before authentication.");
-        if(const auto line=sharingHelp.find(L"\\n");line!=std::wstring::npos)sharingHelp.replace(line,2,L"\r\n");
-        control(L"STATIC",sharingHelp.c_str(),0,1706,8,288,304,24);
-        control(L"BUTTON",tcard_text(L"sync.key_button",L"Key display / update"),WS_TABSTOP|BS_PUSHBUTTON,1730,8,320,100,16);
-        control(L"BUTTON",tcard_text(L"sync.check",L"Check synchronization"),WS_TABSTOP|BS_PUSHBUTTON,1731,116,320,88,16);
-        control(L"BUTTON",tcard_text(L"sync.cache",L"Connection log"),WS_TABSTOP|BS_PUSHBUTTON,1732,212,320,100,16);
-        control(L"STATIC",tcard_text(L"sync.folder",L"Synchronization folder"),0,1710,8,344,304,12);
-        control(L"STATIC",g_sync_client.Profile().c_str(),SS_LEFT|SS_NOPREFIX|SS_NOTIFY,1711,8,360,304,24);
-        control(L"STATIC",card_sync_label().c_str(),0,1712,8,392,304,24);
-        control(L"BUTTON",tcard_text(L"button.save",L"Save"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,204,416,52,16);
-        control(L"BUTTON",tcard_text(L"button.cancel",L"Cancel"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,260,416,52,16);
+        control(L"BUTTON",tcard_text(L"sync.key_button",L"Key display / update"),WS_TABSTOP|BS_PUSHBUTTON,1730,8,222,96,14);
+        control(L"BUTTON",tcard_text(L"sync.check",L"Check synchronization"),WS_TABSTOP|BS_PUSHBUTTON,1731,112,222,96,14);
+        control(L"BUTTON",tcard_text(L"sync.cache",L"Connection log"),WS_TABSTOP|BS_PUSHBUTTON,1732,216,222,96,14);
+        control(L"STATIC",tcard_text(L"sync.folder",L"Synchronization folder"),SS_CENTERIMAGE,1710,8,246,76,14);
+        // Read-only field: the path can be selected and copied with the standard edit menu.
+        control(L"EDIT",g_sync_client.Profile().c_str(),WS_TABSTOP|ES_READONLY|ES_AUTOHSCROLL,1711,88,246,224,14);
+        control(L"BUTTON",tcard_text(L"button.save",L"Save"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,204,270,52,16);
+        control(L"BUTTON",tcard_text(L"button.cancel",L"Cancel"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,260,270,52,16);
         SendDlgItemMessageW(hwnd,1703,EM_SETLIMITTEXT,5,0);
         for(int id:{1715,1717,1719})SendDlgItemMessageW(hwnd,id,EM_SETLIMITTEXT,4096,0);
-        card_sync_allow(hwnd);card_sync_layout(hwnd);SetTimer(hwnd,1,500,nullptr);tcard_ui::prepare_settings(hwnd);return TRUE;
+        card_sync_allow(hwnd);card_sync_layout(hwnd);card_fit_scroll(peers);SetTimer(hwnd,1,500,nullptr);tcard_ui::prepare_settings(hwnd);return TRUE;
     }
-    if(message==WM_CONTEXTMENU&&reinterpret_cast<HWND>(wp)==GetDlgItem(hwnd,1711)){
-        HMENU menu=CreatePopupMenu();if(!menu)return TRUE;
-        AppendMenuW(menu,MF_STRING,1,tcard_text(L"sync.folder_copy",L"Copy folder path"));
-        POINT point{static_cast<short>(LOWORD(lp)),static_cast<short>(HIWORD(lp))};if(point.x==-1&&point.y==-1){RECT rect{};GetWindowRect(GetDlgItem(hwnd,1711),&rect);point={rect.left,rect.bottom};}
-        const auto choice=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_NONOTIFY,point.x,point.y,hwnd,nullptr);DestroyMenu(menu);if(choice==1)card_copy_folder(hwnd);return TRUE;
-    }
-    if(message==WM_COMMAND&&LOWORD(wp)==1715&&HIWORD(wp)==EN_CHANGE){InvalidateRect(GetDlgItem(hwnd,1715),nullptr,TRUE);return TRUE;}
+    if(message==WM_COMMAND&&LOWORD(wp)==1715&&HIWORD(wp)==EN_CHANGE){card_fit_scroll(GetDlgItem(hwnd,1715));InvalidateRect(GetDlgItem(hwnd,1715),nullptr,TRUE);return TRUE;}
     if(message==WM_COMMAND&&LOWORD(wp)==1715&&HIWORD(wp)==EN_KILLFOCUS){card_sync_allow(hwnd);return TRUE;}
+    if(message==WM_COMMAND&&(LOWORD(wp)==1717||LOWORD(wp)==1719)&&HIWORD(wp)==EN_CHANGE){
+        card_fit_scroll(GetDlgItem(hwnd,LOWORD(wp)));InvalidateRect(GetDlgItem(hwnd,LOWORD(wp)-1),nullptr,FALSE);return TRUE;
+    }
     if(message==WM_COMMAND&&(LOWORD(wp)==1716||LOWORD(wp)==1718)&&HIWORD(wp)==BN_CLICKED){
         const auto name=LOWORD(wp)==1716?L"TCardSync.WhiteOpen":L"TCardSync.BlackOpen";
         if(GetPropW(hwnd,name))RemovePropW(hwnd,name);else SetPropW(hwnd,name,reinterpret_cast<HANDLE>(1));card_sync_layout(hwnd);return TRUE;
@@ -418,7 +434,8 @@ INT_PTR CALLBACK card_sync_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 void card_show_sync(HWND owner)
 {
     if(!g_sync_client.Available())return;
-    DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;dialog.cx=320;dialog.cy=360;
+    SettingsTheme theme;
+    DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;dialog.cx=320;dialog.cy=294;
     std::vector<WORD> data(sizeof(dialog)/sizeof(WORD));memcpy(data.data(),&dialog,sizeof(dialog));data.insert(data.end(),{0,0,0,9});
     const wchar_t face[]=L"Segoe UI";data.insert(data.end(),face,face+ARRAYSIZE(face));
     DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(data.data()),owner,card_sync_proc,0);
