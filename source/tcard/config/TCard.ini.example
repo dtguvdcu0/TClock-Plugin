@@ -10,6 +10,9 @@ DefaultFontSize=10
 TitleFontScale=1.6
 ; 1 uses the current semibold title; 0 uses normal weight.
 TitleBold=1
+; Paper color for new notes (Global settings): #FFF5A8 yellow, #D9F2D9 green, #CDEBFF blue,
+; #F4D5E8 pink, #E9DDF7 lavender or #F3F1EB neutral. Other values use yellow.
+DefaultColor=#FFF5A8
 ; Language is inherited from ../tclock-win11.ini when unset.
 ; Global settings changes Japanese/English immediately and saves Language=ja/en.
 ; Manual INI edits require restarting TCard.

@@ -91,7 +91,7 @@ void show_sort()
     if (command >= 1400 && command < 1406) apply_sort(static_cast<int>((command - 1400) / 2), (command - 1400) % 2 != 0);
 }
 
-bool card_save_settings(const std::wstring& family,const std::wstring& size,unsigned history,const wchar_t* language)
+bool card_save_settings(const std::wstring& family,const std::wstring& size,const std::wstring& color,unsigned history,const wchar_t* language)
 {
     const auto path=preferences_path();
     std::vector<wchar_t> section(32768);
@@ -99,18 +99,42 @@ bool card_save_settings(const std::wstring& family,const std::wstring& size,unsi
     if(length>=section.size()-2)return false;
     std::wstring values;
     for(const wchar_t* entry=section.data();*entry;entry+=wcslen(entry)+1){
-        if(_wcsnicmp(entry,L"DefaultFontFamily=",18)==0||_wcsnicmp(entry,L"DefaultFontSize=",16)==0||_wcsnicmp(entry,L"HistoryLimit=",13)==0||_wcsnicmp(entry,L"Language=",9)==0)continue;
+        if(_wcsnicmp(entry,L"DefaultFontFamily=",18)==0||_wcsnicmp(entry,L"DefaultFontSize=",16)==0||_wcsnicmp(entry,L"DefaultColor=",13)==0||
+            _wcsnicmp(entry,L"HistoryLimit=",13)==0||_wcsnicmp(entry,L"Language=",9)==0)continue;
         values.append(entry);values.push_back(L'\0');
     }
     values+=L"DefaultFontFamily="+family;values.push_back(L'\0');
     values+=L"DefaultFontSize="+size;values.push_back(L'\0');
+    values+=L"DefaultColor="+color;values.push_back(L'\0');
     values+=L"HistoryLimit="+std::to_wstring(history);values.push_back(L'\0');
     values+=std::wstring(L"Language=")+language;values.push_back(L'\0');values.push_back(L'\0');
     return WritePrivateProfileSectionW(L"TCard",values.c_str(),path.c_str())!=FALSE;
 }
 
+void card_draw_color(const DRAWITEMSTRUCT& item)
+{
+    if(item.itemID==static_cast<UINT>(-1)||item.itemData>=std::size(kColorChoices))return;
+    const auto& choice=kColorChoices[item.itemData];const HDC dc=item.hDC;const UINT dpi=GetDpiForWindow(item.hwndItem);
+    const bool selected=(item.itemState&ODS_SELECTED)!=0;
+    SetDCBrushColor(dc,GetSysColor(selected?COLOR_HIGHLIGHT:COLOR_WINDOW));FillRect(dc,&item.rcItem,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    const int pad=tcard_ui::dip_to_px(4,dpi),inset=tcard_ui::dip_to_px(3,dpi),width=tcard_ui::dip_to_px(20,dpi);
+    RECT swatch{item.rcItem.left+pad,item.rcItem.top+inset,item.rcItem.left+pad+width,item.rcItem.bottom-inset};
+    SetDCBrushColor(dc,choice.color);FillRect(dc,&swatch,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    SetDCBrushColor(dc,RGB(150,150,150));FrameRect(dc,&swatch,static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    RECT text=item.rcItem;text.left=swatch.right+pad*2;
+    SetBkMode(dc,TRANSPARENT);SetTextColor(dc,GetSysColor(selected?COLOR_HIGHLIGHTTEXT:COLOR_WINDOWTEXT));
+    DrawTextW(dc,tcard_color_name(choice.id),-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);
+    if((item.itemState&ODS_FOCUS)&&!(item.itemState&ODS_NOFOCUSRECT))DrawFocusRect(dc,&item.rcItem);
+}
 INT_PTR CALLBACK card_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
 {
+    if(message==WM_MEASUREITEM&&lp&&reinterpret_cast<MEASUREITEMSTRUCT*>(lp)->CtlID==1616){
+        auto& measure=*reinterpret_cast<MEASUREITEMSTRUCT*>(lp);HDC dc=GetDC(hwnd);TEXTMETRICW metrics{};
+        const auto font=reinterpret_cast<HFONT>(SendMessageW(hwnd,WM_GETFONT,0,0));const auto old=dc&&font?SelectObject(dc,font):nullptr;
+        if(dc&&GetTextMetricsW(dc,&metrics))measure.itemHeight=static_cast<UINT>(metrics.tmHeight+2);
+        if(old)SelectObject(dc,old);if(dc)ReleaseDC(hwnd,dc);SetWindowLongPtrW(hwnd,DWLP_MSGRESULT,TRUE);return TRUE;
+    }
+    if(message==WM_DRAWITEM&&lp&&reinterpret_cast<const DRAWITEMSTRUCT*>(lp)->CtlID==1616){card_draw_color(*reinterpret_cast<const DRAWITEMSTRUCT*>(lp));return TRUE;}
     if(message==WM_CTLCOLORSTATIC){
         const INT_PTR brush=tcard_ui::paint_settings(hwnd,message,wp,lp);const int id=GetDlgCtrlID(reinterpret_cast<HWND>(lp));
         if(id==1611||id==1612)SetTextColor(reinterpret_cast<HDC>(wp),kSettingsNote);
@@ -129,24 +153,34 @@ INT_PTR CALLBACK card_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             SendMessageW(child,WM_SETFONT,font,TRUE);return child;
         };
         // One label column (x 8) and one control column (x 92 to 262); rows keep a 16 DLU pitch.
-        const HWND heading=control(L"STATIC",tcard_text(L"settings.default_font",L"Default font and size"),SS_NOPREFIX,1600,8,8,82,12);
+        const HWND heading=control(L"STATIC",tcard_text(L"settings.card_defaults",L"Card defaults"),SS_NOPREFIX,1600,8,8,82,12);
         LOGFONTW face{};
         if(GetObjectW(reinterpret_cast<HFONT>(font),sizeof(face),&face)){
             face.lfWeight=FW_SEMIBOLD;if(HFONT bold=CreateFontIndirectW(&face)){SetPropW(hwnd,L"TCard.Heading",bold);SendMessageW(heading,WM_SETFONT,reinterpret_cast<WPARAM>(bold),TRUE);}
         }
-        control(L"STATIC",tcard_text(L"settings.new_notes",L"Applies to notes following global settings."),SS_NOPREFIX|SS_ENDELLIPSIS,1611,92,8,170,12);
+        control(L"STATIC",tcard_text(L"settings.font_scope",L"Fonts also apply to notes following global settings"),SS_NOPREFIX|SS_ENDELLIPSIS,1611,92,8,170,12);
         control(L"STATIC",tcard_text(L"label.font",L"Font"),SS_CENTERIMAGE,1601,8,24,80,14);
         HWND family=control(L"COMBOBOX",L"",WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST|CBS_SORT,1602,92,24,116,160);
         control(L"STATIC",tcard_text(L"label.size",L"Size"),SS_CENTERIMAGE|SS_RIGHT,1603,210,24,26,14);
         HWND size=control(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,1604,240,25,22,12);
-        control(L"STATIC",tcard_text(L"settings.language",L"Language"),SS_CENTERIMAGE,1608,8,40,80,14);
-        HWND language=control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST,1609,92,40,170,120);
+        control(L"STATIC",tcard_text(L"settings.new_color",L"New note color"),SS_CENTERIMAGE,1615,8,40,80,14);
+        HWND color=control(L"COMBOBOX",L"",WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST|CBS_OWNERDRAWFIXED|CBS_HASSTRINGS,1616,92,40,116,160);
+        {
+            const auto current=tcard_default_color();
+            for(size_t i=0;i<std::size(kColorChoices);++i){
+                const auto index=SendMessageW(color,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(tcard_color_name(kColorChoices[i].id)));
+                if(index<0)continue;SendMessageW(color,CB_SETITEMDATA,index,static_cast<LPARAM>(i));
+                if(current==kColorChoices[i].value)SendMessageW(color,CB_SETCURSEL,index,0);
+            }
+        }
+        control(L"STATIC",tcard_text(L"settings.language",L"Language"),SS_CENTERIMAGE,1608,8,56,80,14);
+        HWND language=control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST,1609,92,56,170,120);
         SendMessageW(language,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"\u65e5\u672c\u8a9e"));
         SendMessageW(language,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"English"));
         SendMessageW(language,CB_SETCURSEL,tcard_lang::g_code==L"ja"?0:1,0);
-        control(L"STATIC",tcard_text(L"settings.history",L"History limit per note"),SS_CENTERIMAGE,1605,8,56,80,14);
-        HWND history=control(L"COMBOBOX",L"",WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,1606,92,56,60,120);
-        control(L"STATIC",tcard_text(L"settings.next_checkpoint",L"Applies at the next history save"),SS_CENTERIMAGE|SS_ENDELLIPSIS|SS_NOPREFIX,1612,158,56,104,14);
+        control(L"STATIC",tcard_text(L"settings.history",L"History limit per note"),SS_CENTERIMAGE,1605,8,72,80,14);
+        HWND history=control(L"COMBOBOX",L"",WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,1606,92,72,60,120);
+        control(L"STATIC",tcard_text(L"settings.next_checkpoint",L"Applies at the next history save"),SS_CENTERIMAGE|SS_ENDELLIPSIS|SS_NOPREFIX,1612,158,72,104,14);
         const auto stored=GetPrivateProfileIntW(L"TCard",L"HistoryLimit",0,preferences_path().c_str());
         const unsigned limit=stored<=10000?stored:0;
         const unsigned limits[]={10,20,50,100,200,500,1000,0};
@@ -165,11 +199,11 @@ INT_PTR CALLBACK card_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
         const bool sync=g_sync_client.Available();
         if(sync){
             try{g_sync_client.Ready();}catch(...){/* The status line keeps the last known state. */}
-            control(L"STATIC",tcard_text(L"settings.sync",L"Sync"),SS_CENTERIMAGE,1614,8,80,80,16);
-            control(L"STATIC",card_sync_short().c_str(),SS_CENTERIMAGE|SS_ENDELLIPSIS|SS_NOPREFIX,1613,92,80,104,16);
-            control(L"BUTTON",(std::wstring(tcard_text(L"sync.settings",L"Sync settings"))+L"\u2026").c_str(),WS_TABSTOP|BS_PUSHBUTTON,1610,200,81,62,14);
+            control(L"STATIC",tcard_text(L"settings.sync",L"Sync"),SS_CENTERIMAGE,1614,8,96,80,16);
+            control(L"STATIC",card_sync_short().c_str(),SS_CENTERIMAGE|SS_ENDELLIPSIS|SS_NOPREFIX,1613,92,96,104,16);
+            control(L"BUTTON",(std::wstring(tcard_text(L"sync.settings",L"Sync settings"))+L"\u2026").c_str(),WS_TABSTOP|BS_PUSHBUTTON,1610,200,97,62,14);
         }
-        const int buttons=sync?104:80;
+        const int buttons=sync?120:96;
         control(L"STATIC",L"",SS_NOPREFIX,1607,8,buttons,140,16);
         control(L"BUTTON",tcard_text(L"button.save",L"Save"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,154,buttons,52,16);
         control(L"BUTTON",tcard_text(L"button.cancel",L"Cancel"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,210,buttons,52,16);
@@ -187,7 +221,7 @@ INT_PTR CALLBACK card_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
     if(message==WM_COMMAND){
         if(LOWORD(wp)==1610){card_show_sync(hwnd);SetDlgItemTextW(hwnd,1613,card_sync_short().c_str());return TRUE;}
         if((LOWORD(wp)==1604&&HIWORD(wp)==EN_CHANGE)||
-            ((LOWORD(wp)==1602||LOWORD(wp)==1606||LOWORD(wp)==1609)&&HIWORD(wp)==CBN_SELCHANGE))
+            ((LOWORD(wp)==1602||LOWORD(wp)==1606||LOWORD(wp)==1609||LOWORD(wp)==1616)&&HIWORD(wp)==CBN_SELCHANGE))
             SetDlgItemTextW(hwnd,1607,L"");
         if(LOWORD(wp)==IDCANCEL){EndDialog(hwnd,IDCANCEL);return TRUE;}
         if(LOWORD(wp)==IDOK){
@@ -208,8 +242,11 @@ INT_PTR CALLBACK card_settings_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp)
             const auto languageIndex=SendDlgItemMessageW(hwnd,1609,CB_GETCURSEL,0,0);
             if(languageIndex!=0&&languageIndex!=1)return TRUE;
             const wchar_t* language=languageIndex==0?L"ja":L"en";
+            const auto colorIndex=SendDlgItemMessageW(hwnd,1616,CB_GETCURSEL,0,0);
+            const auto colorChoice=colorIndex==CB_ERR?CB_ERR:SendDlgItemMessageW(hwnd,1616,CB_GETITEMDATA,colorIndex,0);
+            if(colorChoice<0||static_cast<size_t>(colorChoice)>=std::size(kColorChoices))return TRUE;
             if(tcard_lang::read_catalog(tcard_lang::language_file(language)).empty()||
-                !card_save_settings(family,text,static_cast<unsigned>(limit),language)){
+                !card_save_settings(family,text,kColorChoices[colorChoice].value,static_cast<unsigned>(limit),language)){
                 SetDlgItemTextW(hwnd,1607,tcard_text(L"settings.save_failed",L"Could not save settings."));
                 MessageBeep(MB_ICONERROR);return TRUE;
             }
@@ -224,7 +261,7 @@ bool card_show_settings()
 {
     SettingsTheme theme;
     DLGTEMPLATE dialog{};dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT;
-    dialog.cx=270;dialog.cy=g_sync_client.Available()?126:102;
+    dialog.cx=270;dialog.cy=g_sync_client.Available()?142:118;
     std::vector<WORD> data(sizeof(dialog)/sizeof(WORD));memcpy(data.data(),&dialog,sizeof(dialog));
     data.insert(data.end(),{0,0,0,9});
     const wchar_t face[]=L"Segoe UI";data.insert(data.end(),face,face+ARRAYSIZE(face));

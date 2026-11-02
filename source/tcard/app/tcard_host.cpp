@@ -342,11 +342,21 @@ void tcard_initialize_defaults()
     if (!complete) DeleteFileW(ini.c_str());
 }
 
+// Paper color for new notes from Global settings; only the preset palette is accepted, otherwise yellow.
+std::wstring tcard_default_color()
+{
+    wchar_t value[16]{};
+    GetPrivateProfileStringW(L"TCard",L"DefaultColor",L"",value,ARRAYSIZE(value),(module_dir()+L"\\TCard.ini").c_str());
+    for(const auto& choice:kColorChoices)if(_wcsicmp(value,choice.value)==0)return choice.value;
+    return kColorChoices[0].value;
+}
+
 void tcard_apply_defaults(tcard::CardRecord& card)
 {
     const auto& defaults=tcard_fonts::defaults();
     card.fontFamily=defaults.family;card.fontSize=defaults.size;
     card.inheritFontFamily=true;card.inheritFontSize=true;
+    card.color=tcard_default_color();
 }
 
 tcard_fonts::Defaults tcard_resolve_font(const tcard::CardRecord& card)
@@ -2088,7 +2098,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             card.title = L"New";
             card.richHtml=!card.markdown;
             card.source=card.richHtml?tcard_rich::serialize(tcard_rich::plain(L"")):L"";
-            card.color = L"#FFF5A8";
             std::vector<tcard::CardRecord> created{card};
             if (!card_save_records(created)) {
                 MessageBoxW(g_main, tcard_text(L"message.create_failed", L"Could not create a note. Check the storage location."), tcard_lang::text(L"app.title", L"TCard").c_str(), MB_OK | MB_ICONERROR);
