@@ -439,7 +439,10 @@ struct Inbox {
     bool Refresh(const std::wstring& storage)
     {
         std::lock_guard guard(receiveMutex);const auto now=GetTickCount64(),current=revision.load();if(observed==current&&audit&&now-audit<60000)return false;
-        targets=Read(storage);observed=current;audit=now;return true;
+        // A periodic audit that finds identical targets is not a change; it must not force a full replica export.
+        auto next=Read(storage);const auto same=[](const Target& a,const Target& b){return a.leaf==b.leaf&&a.source==b.source&&a.receiver==b.receiver&&a.header==b.header&&a.digest==b.digest&&a.sequence==b.sequence;};
+        const bool changed=observed!=current||!audit||!std::equal(next.begin(),next.end(),targets.begin(),targets.end(),same);
+        targets=std::move(next);observed=current;audit=now;return changed;
     }
     bool Retire(const std::wstring& storage,const selection::Inventory& applied)
     {

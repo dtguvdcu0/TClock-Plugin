@@ -109,7 +109,7 @@ class Client {
     }
     struct ExportTask {
         std::atomic_bool done=false;bool okay=false;std::wstring package,hash;tcard_sync::Result result;
-        Stamp stamp,appliedStamp;bool batchMode=false;tcard_mail::Producer batch;CustodyState custody;
+        Stamp stamp,appliedStamp;bool batchMode=false,yielded=false;tcard_mail::Producer batch;CustodyState custody;
         std::jthread worker; // Destroy/join before fields used by the reader are released.
     };
     std::unique_ptr<ExportTask> exportTask_;
@@ -149,21 +149,33 @@ class Client {
     HANDLE changes_=INVALID_HANDLE_VALUE;
     std::wstring watched_;
     ULONGLONG exported_=0;
-    bool Changed(const std::wstring& storage)
+    // Draft autosaves arrive in bursts (0.65 s draft, 3 s checkpoint). A full committed export between them
+    // holds the native writer lock against the next UI save, so background exports wait for writes to settle.
+    static constexpr ULONGLONG kSettleMs=4000,kAuditMs=10*60*1000;
+    bool localChange_=false;ULONGLONG localChangeAt_=0;
+    bool Changed(const std::wstring& storage,bool settle=false)
     {
+        const auto now=GetTickCount64();
         if(watched_!=storage||changes_==INVALID_HANDLE_VALUE){
             if(changes_!=INVALID_HANDLE_VALUE)FindCloseChangeNotification(changes_);
             watched_=storage;changes_=FindFirstChangeNotificationW(storage.c_str(),TRUE,
                 FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_DIR_NAME|FILE_NOTIFY_CHANGE_SIZE|FILE_NOTIFY_CHANGE_LAST_WRITE|FILE_NOTIFY_CHANGE_SECURITY);
-            return true;
+            localChange_=false;return true;
         }
         const auto result=WaitForSingleObject(changes_,0);
-        if(result==WAIT_TIMEOUT)return sent_.empty()||GetTickCount64()-exported_>=60000;
-        // Rearm before export so a concurrent writer remains visible to the next poll.
-        if(result!=WAIT_OBJECT_0||!FindNextChangeNotification(changes_)){
-            FindCloseChangeNotification(changes_);changes_=INVALID_HANDLE_VALUE;
+        if(result!=WAIT_TIMEOUT){
+            // Rearm before export so a concurrent writer remains visible to the next poll.
+            if(result!=WAIT_OBJECT_0||!FindNextChangeNotification(changes_)){
+                FindCloseChangeNotification(changes_);changes_=INVALID_HANDLE_VALUE;
+            }
+            localChange_=true;localChangeAt_=now;
         }
-        return true;
+        if(localChange_){
+            if(settle&&now-localChangeAt_<kSettleMs)return false;
+            localChange_=false;return true;
+        }
+        // Notifications are primary; the unconditional full rebuild is only a bounded safety audit.
+        return sent_.empty()||now-exported_>=kAuditMs;
     }
 
     bool SendBatches(const std::wstring& storage,bool async)
@@ -172,7 +184,7 @@ class Client {
         try{
             const auto owner=tcard_ack::Owner(process_,pid_);tcard_mail::Group(storage,mailbox_);
             const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyCap_?tcard_bootstrap::Node(storage):L"",dependencyNode_,L"",dependencyVersion_};
-            const bool changed=Changed(storage);Stamp applied;
+            const bool changed=Changed(storage,async);Stamp applied;
             if(!changed&&!batch_.Changed(mailbox_,L"outgoing.json",L"outgoing-commit.json",owner)&&
                 Fingerprint(mailbox_,L"applied.json",applied)&&applied==appliedStamp_)return true;
             if(!async){
@@ -560,6 +572,9 @@ public:
         }catch(...){return false;}
     }
     bool Sending()const{return exportTask_!=nullptr||sourceTask_!=nullptr;}
+    // A UI save outranks a background read-only snapshot export: interrupt it so the writer lock is
+    // released promptly. The export is retried after local writes settle; batch producers are not interrupted.
+    void YieldExport(){if(exportTask_&&!exportTask_->batchMode&&!exportTask_->done.load()){exportTask_->yielded=true;exportTask_->worker.request_stop();}}
     bool Receiving()const{return receiveTask_!=nullptr;}
     bool SendAsync(const std::wstring& storage)
     {
@@ -568,6 +583,7 @@ public:
             if(!exportTask_->done.load())return false;
             auto task=std::move(exportTask_);if(task->worker.joinable())task->worker.join();custody_=std::move(task->custody);
             if(!task->okay){
+                if(task->yielded){localChange_=true;localChangeAt_=GetTickCount64();return false;}
                 if(task->result.error==L"Legacy journal requires UI preparation")return Send(storage);
                 if(batchCap_&&tcard_mail::Budget(task->result)){batchMode_=true;return SendBatches(storage,true);}
                 exported_=0;sent_.clear();status=L"sync.export_failed";return false;
@@ -577,7 +593,7 @@ public:
         }
         if(atomicWaiting_)return true;
         if(batchMode_)return SendBatches(storage,true);
-        Stamp stamp,applied;const bool changed=Changed(storage);
+        Stamp stamp,applied;const bool changed=Changed(storage,true);
         if(!changed&&!sent_.empty()&&Fingerprint(mailbox_,L"outgoing.json",stamp)&&stamp==sentStamp_&&
             (!tcard_storage::Required(mailbox_)||(Fingerprint(mailbox_,L"applied.json",applied)&&applied==appliedStamp_)))return true;
         exportTask_=std::make_unique<ExportTask>();auto* task=exportTask_.get();task->custody=custody_;const auto mailbox=mailbox_,previous=sent_,profile=profile_,space=dependencySpace_,group=dependencyGroup_;const auto batches=batchCap_,objects=objectCap_,dependencies=dependencyCap_;const auto dependencyVersion=dependencyVersion_;

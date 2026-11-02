@@ -162,7 +162,9 @@ void card_purge_trash(HWND hwnd)
 }
 bool card_save_records(std::vector<tcard::CardRecord>& cards,bool checkpoint=true)
 {
-    return !g_storage_locked&&tcard::SaveCards(g_file_path,cards,checkpoint,g_history_limit);
+    if(g_storage_locked)return false;
+    g_sync_client.YieldExport();
+    return tcard::SaveCards(g_file_path,cards,checkpoint,g_history_limit);
 }
 COLORREF g_preview_color = RGB(255, 245, 168);
 HBRUSH g_preview_brush = nullptr;

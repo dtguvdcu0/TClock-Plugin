@@ -240,6 +240,11 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     struct Watch {HANDLE value=INVALID_HANDLE_VALUE;~Watch(){if(value!=INVALID_HANDLE_VALUE)FindCloseChangeNotification(value);}} watch;
     ULONGLONG auditedAt=0,budgetRetryAt=0;std::wstring cachedIncoming,cachedHash;bool exportNeeded=true;
     tcard_bridge::Stamp incomingStamp,outgoingStamp;ULONGLONG incomingAuditAt=0,outgoingAt=0;std::wstring cachedOutgoing,outgoingHash;
+    // Parse the retained outgoing packet kind once per read; packets can be megabytes and the loop runs every 300 ms.
+    bool outgoingBatched=false;
+    // Replica watches and receive revisions drive exports; the unconditional full rebuild is a bounded safety audit.
+    constexpr ULONGLONG auditMs=10*60*1000;
+    tcard_bridge::Stamp checkSeen;bool checkKnown=false;std::wstring checkObserved;
     selection::Inventory expectedOwner,appliedOwner,outgoingRequired; tcard_bridge::Stamp appliedStamp;ULONGLONG appliedAt=0;
     unsigned ownerDependencyVersion=1;bool ownerBatches=false,ownerObjects=false,ownerAtomic=false,ownerDependencies=false,incomingBatches=false;std::wstring ownerNode;tcard_mail::Producer incomingBatch;tcard_handoff::Sender atomicSender;tcard_remote::Inbox remoteInbox;
     tcard_bridge::Stamp committedOutgoingStamp;ULONGLONG committedOutgoingAt=0;
@@ -264,16 +269,16 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         tcard_bridge::Stamp nextOutgoing;const auto pollAt=GetTickCount64();
         const bool present=tcard_bridge::Fingerprint(mailbox,L"outgoing.json",nextOutgoing);
         if(present&&(!outgoingAt||!(nextOutgoing==outgoingStamp)||pollAt-outgoingAt>=60000)){
-            if(tcard_bridge::Read(mailbox,L"outgoing.json",readOutgoing)){cachedOutgoing=std::move(readOutgoing);outgoingHash=tcard_bridge::Hash(cachedOutgoing);outgoingAt=pollAt;outgoingStamp=nextOutgoing;}
-            else{outgoingAt=0;cachedOutgoing.clear();outgoingHash.clear();}
+            if(tcard_bridge::Read(mailbox,L"outgoing.json",readOutgoing)){cachedOutgoing=std::move(readOutgoing);outgoingHash=tcard_bridge::Hash(cachedOutgoing);outgoingBatched=tcard_mail::Batched(cachedOutgoing);outgoingAt=pollAt;outgoingStamp=nextOutgoing;}
+            else{outgoingAt=0;cachedOutgoing.clear();outgoingHash.clear();outgoingBatched=false;}
         }
         if(present&&outgoingAt){
             const auto& outgoing=cachedOutgoing;const auto& hash=outgoingHash;
-            tcard_bridge::Stamp commitStamp;const bool batchPacket=tcard_mail::Batched(outgoing);
+            tcard_bridge::Stamp commitStamp;const bool batchPacket=outgoingBatched;
             const bool repair=batchPacket&&(!tcard_bridge::Fingerprint(mailbox,L"outgoing-commit.json",commitStamp)||
                 !(commitStamp==committedOutgoingStamp)||pollAt-committedOutgoingAt>=60000);
             if(hash!=accepted||repair){Result result;
-                std::wstring delta=outgoing;selection::Inventory required;const bool batch=tcard_mail::Batched(outgoing);bool sourceAtomic=false,dependency=false;tcard_dependencies::Context expected;
+                std::wstring delta=outgoing;selection::Inventory required;const bool batch=outgoingBatched;bool sourceAtomic=false,dependency=false;tcard_dependencies::Context expected;
                 if(batch)try{
                     dependency=JsonObject::Parse(outgoing).GetNamedNumber(L"BatchVersion")==3;
                     if(dependency){
@@ -296,9 +301,11 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 }exportNeeded=true;
             }
         }
-        std::wstring check;
-        if(tcard_bridge::Read(mailbox,L"check-request.json",check)){
-            JsonObject request;
+        // Authenticated reads of a check request repeat only after replacement or a new observed outgoing hash.
+        std::wstring check;tcard_bridge::Stamp checkStamp;
+        if(!tcard_bridge::Fingerprint(mailbox,L"check-request.json",checkStamp))checkKnown=false;
+        else if((!checkKnown||!(checkStamp==checkSeen)||checkObserved!=observed)&&tcard_bridge::Read(mailbox,L"check-request.json",check)){
+            checkKnown=true;checkSeen=checkStamp;checkObserved=observed;JsonObject request;
             if(JsonObject::TryParse(check,request)&&request.GetNamedNumber(L"Pid",0)==GetCurrentProcessId()&&sync_string(request,L"OutgoingHash")==observed){
                 const auto token=sync_string(request,L"Request");if(token.size()==36){std::lock_guard lock(checkMutex);requested=token;}
             }
@@ -330,14 +337,14 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
             if(!remoteInbox.targets.empty()){
                 if(!ownerApplied||!ownerBatches||!ownerObjects||!ownerAtomic){report(L"sync.pending",pending+remoteInbox.targets.size());continue;}
                 Result result;unsigned version=0;std::wstring committed;
-                if(exportNeeded||now-auditedAt>=60000){if(!ExportCommittedInventory(replica,committed,result,version)){report(L"sync.failed",pending);continue;}expectedOwner=selection::Read(committed);auditedAt=now;}
+                if(exportNeeded||now-auditedAt>=auditMs){if(!ExportCommittedInventory(replica,committed,result,version)){report(L"sync.failed",pending);continue;}expectedOwner=selection::Read(committed);auditedAt=now;}
                 remoteTarget=remoteInbox.Ready(expectedOwner);incomingBatches=true;
                 if(remoteTarget.empty()){exportNeeded=false;ownerPending=remoteInbox.targets.size();report(L"sync.pending",pending);continue;}
             }
         }catch(...){report(L"sync.failed",pending);continue;}
         if(incomingBatches){
             const tcard_dependencies::Context dependencyChannel{keys.space,dependencyGroup,dependencyNode,ownerNode,L"",ownerDependencyVersion};
-            Result result;const bool changed=exportNeeded||now-auditedAt>=60000;
+            Result result;const bool changed=exportNeeded||now-auditedAt>=auditMs;
             if(changed){
                 std::wstring header;unsigned version=0;
                 if(!ExportInventory(replica,header,result,version)){report(L"sync.failed",pending);continue;}
@@ -355,7 +362,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 if(ownerApplied&&ownerBatches){incomingBatches=true;exportNeeded=true;continue;}
                 if(now<budgetRetryAt){report(L"sync.pending",pending);continue;}
             }
-            if(exportNeeded||now-auditedAt>=60000){
+            if(exportNeeded||now-auditedAt>=auditMs){
                 Result result;std::wstring incoming;
                 if(!ExportChanges(replica,incoming,result)){
                     if(tcard_mail::Budget(result)){

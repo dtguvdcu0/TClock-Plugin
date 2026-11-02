@@ -16,9 +16,10 @@ static std::wstring sync_directory(const std::wstring& path)
     return tcard_native::Extended(tcard_native::Resolve(path));
 }
 static void sync_seed(const std::wstring& storagePath,const std::wstring& directory,
-    const std::vector<tcard::CardRecord>& cards,bool readonly=false)
+    const std::vector<tcard::CardRecord>& cards,bool readonly=false,std::stop_token stop={})
 {
     for(const auto& card:cards){
+        if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
         JsonObject manifest;
         if(!sync_read(directory+L"\\"+sync_stem(card.id),L"card.json",manifest))throw std::runtime_error("Unreadable card");
         const bool incomplete=manifest.GetNamedNumber(L"CreatedUtcMs",0)!=static_cast<double>(sync_read_time(card.createdUtc))||
@@ -129,7 +130,7 @@ static bool sync_export(const std::wstring& storagePath,std::wstring& package,Re
         std::vector<tcard::CardRecord> cards;
         if(readonly){if(!tcard::LoadCardSnapshot(storagePath,cards,false))throw std::runtime_error("Cannot read committed snapshot");}
         else tcard::LoadCards(storagePath,cards);
-        sync_seed(storagePath,directory,cards,readonly);
+        sync_seed(storagePath,directory,cards,readonly,stop);
         package=sync_capture(directory,readonly,maximumVersion,result,stop);return true;
     }catch(const std::exception& e){result.error.assign(e.what(),e.what()+strlen(e.what()));package.clear();if(maximumVersion)*maximumVersion=0;return false;}
     catch(...){result.error=L"Export failed";package.clear();if(maximumVersion)*maximumVersion=0;return false;}
