@@ -236,23 +236,24 @@ inline void run(Context* host,int tool)
 
 namespace tcard_tools {
 // Text toolbar labels show their own effect: bold B, italic I, underlined U, struck ab, monospace code.
-// Commands without a format effect use short words (list, link, scale, checkpoint, image, view); widths follow the label.
+// Checkpoint and image use pictograms; list, link, scale and view use short words; widths follow the label.
 inline std::wstring label(HWND button,int tool)
 {
     if(tool==4)return text(L"tool.label_list",L"List");
-    if(tool==7)return text(L"tool.label_checkpoint",L"Stop");
+    if(tool==7)return L"\U0001F4CC"; // pushpin: today's stopping point
     if(tool==9)return text(L"tool.label_link",L"Link");
-    if(tool==12)return text(L"tool.label_image",L"Image");
+    if(tool==12)return L"\U0001F5BC"; // framed picture: insert image
     const int length=GetWindowTextLengthW(button);std::wstring value(static_cast<size_t>((std::max)(0,length))+1,L'\0');
     value.resize(static_cast<size_t>((std::max)(0,GetWindowTextW(button,value.data(),length+1))));return value;
 }
 inline HFONT label_font(int tool,UINT dpi)
 {
-    const bool word=tool==4||tool==6||tool==7||tool==9||tool==11||tool==12;
+    // Pushpin and picture use monochrome Segoe UI Emoji glyphs (GDI draws them in the label ink).
+    const bool word=tool==4||tool==6||tool==9||tool==11,emoji=tool==7||tool==12;
     const int size=tcard_ui::dip_to_px(word?12:15,dpi);
-    const int weight=tool==0||tool==8?FW_BOLD:word?FW_NORMAL:FW_SEMIBOLD;
+    const int weight=tool==0||tool==8?FW_BOLD:word||emoji?FW_NORMAL:FW_SEMIBOLD;
     return CreateFontW(-size,0,0,0,weight,tool==1,tool==2,tool==3,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,
-        DEFAULT_PITCH|FF_DONTCARE,tool==10?L"Consolas":tool==1?L"Georgia":L"Segoe UI");
+        DEFAULT_PITCH|FF_DONTCARE,emoji?L"Segoe UI Emoji":tool==10?L"Consolas":tool==1?L"Georgia":L"Segoe UI");
 }
 inline int width(HWND button,int tool)
 {
