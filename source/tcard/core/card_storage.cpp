@@ -163,13 +163,15 @@ bool store_open(const State& state,const Bytes& stored,Bytes& plain)
     std::array<uint8_t,32> digest{};
     if(!store_hash(plain,digest)||digest!=context.object){if(!plain.empty())SecureZeroMemory(plain.data(),plain.size());plain.clear();return false;}return true;
 }
-bool store_seal(const std::wstring& root,State& state,const Bytes& plain,Bytes& stored)
+// Seal derives a separate AES-GCM key from the data key, generation, kind and SHA-256 of the plaintext, with a fresh
+// random 96-bit nonce. A key is therefore reused only for byte-identical content, far below the random-nonce bound
+// (2^32 per key). The former global attempt counter protected no key, rewrote and flushed the key control on every
+// encrypted write, and would end all saves at its limit. Its field stays in the key format and is no longer advanced.
+bool store_seal(const std::wstring&,State& state,const Bytes& plain,Bytes& stored)
 {
-    stored.clear();if(plain.size()>tcard_crypto::maxObject||state.attempts>=maxAttempts)return false;
+    stored.clear();if(plain.size()>tcard_crypto::maxObject)return false;
     tcard_crypto::Context context;context.generation=state.generation;context.kind=5;
     if(!store_hash(plain,context.object))return false;
-    // Reserve every attempt durably, including orphan ciphertext after failed publication.
-    ++state.attempts;if(!store_access_key(root,state,true))return false;
     return tcard_crypto::Seal(state.keys,context,plain,stored);
 }
 void store_collect(const std::wstring& root,const std::wstring& current,std::vector<std::wstring>& files,unsigned depth=0)
