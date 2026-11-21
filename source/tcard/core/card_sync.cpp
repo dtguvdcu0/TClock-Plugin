@@ -36,6 +36,17 @@ static bool sync_alias(const std::wstring& a,const std::wstring& b)
     const auto left=sync_stem(a),right=sync_stem(b);
     return CompareStringOrdinal(left.c_str(),static_cast<int>(left.size()),right.c_str(),static_cast<int>(right.size()),TRUE)==CSTR_EQUAL;
 }
+// Every batch cycle captures the committed inventory several times. Unchanged manifests (same size, creation and
+// write time) reuse their decoded text; a stamp read before and after decoding guards against concurrent replacement.
+// The cache is discarded every 10 minutes, which bounds how long a same-stamp corruption can stay unnoticed.
+static bool sync_read_stamped(const std::wstring& root,const std::wstring& name,JsonObject& object)
+{
+    const auto path=root+L"\\"+name;auto& cache=sync_journal_cache();SyncFileStamp before,after;std::wstring text;
+    const bool stamped=sync_file_stamp(path,before);
+    if(stamped&&cache.FindFile(path,before,&text)){object=JsonObject::Parse(text);return true;}
+    std::vector<BYTE> bytes;if(!tcard_asset::read(root,name,bytes))return false;text=tcard_asset::decode(bytes);object=JsonObject::Parse(text);
+    if(stamped&&sync_file_stamp(path,after)&&after==before)cache.StoreFile(path,before,std::move(text));return true;
+}
 static std::map<std::wstring,JsonObject> sync_manifests(const std::wstring& directory,bool readonly=false,
     const std::vector<std::wstring>* selected=nullptr)
 {
@@ -55,7 +66,7 @@ static std::map<std::wstring,JsonObject> sync_manifests(const std::wstring& dire
         JsonObject manifest;
         if(entry.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){
             if(!tcard_asset::leaf(name)||sync_deleted(directory,name))continue;
-            if(!sync_read(directory+L"\\"+name,L"card.json",manifest))continue;
+            if(!sync_read_stamped(directory+L"\\"+name,L"card.json",manifest))continue;
         }else{
             if(name.size()<9||name.substr(name.size()-8)!=L".deleted")continue;
             const auto stem=name.substr(0,name.size()-8);if(!sync_deleted(directory,stem))continue;
@@ -86,27 +97,38 @@ static bool sync_check_image(const std::wstring& root,const std::wstring& name,s
     }
     if(tcard_asset::hash(bytes)!=name.substr(7,64))throw std::runtime_error("Invalid retained image hash");return true;
 }
+// Inventory captures need only proof that a retained image is present and valid. Image names embed their content
+// hash, so an unchanged stamp after a full verification proves the same bytes until the cache audit.
+static bool sync_verified_image(const std::wstring& root,const std::wstring& name)
+{
+    auto relative=name;std::replace(relative.begin(),relative.end(),L'/',L'\\');const auto path=root+L"\\"+relative;
+    auto& cache=sync_journal_cache();SyncFileStamp before,after;const bool stamped=sync_file_stamp(path,before);
+    if(stamped&&cache.FindFile(path,before,nullptr))return true;
+    std::vector<BYTE> bytes;if(!sync_check_image(root,name,bytes))return false;
+    if(stamped&&sync_file_stamp(path,after)&&after==before)cache.StoreFile(path,before,{});return true;
+}
 static std::wstring sync_capture(const std::wstring& directory,bool readonly,unsigned* maximumVersion,Result& result,std::stop_token stop={})
 {
     JsonObject envelope;envelope.Insert(L"Version",JsonValue::CreateNumberValue(1));JsonArray notes;
     for(const auto& [id,manifest]:sync_manifests(directory,readonly)){
         if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
         JsonObject note;note.Insert(L"Id",JsonValue::CreateStringValue(id));JsonArray operations;
-        const auto changes=sync_load(directory,id,sync_ids(manifest));std::set<std::wstring> names;
+        const auto changes=sync_load(directory,id,sync_ids(manifest));std::set<std::wstring> names;const auto imageArchive=sync_archive(directory,id);
         for(const auto& change:changes){
             if(maximumVersion){
                 // Match sync_pack operation versions; old IDs and canonical bytes remain unchanged.
                 const unsigned version=change.before.dates||change.after.dates?3u:change.before.display||change.after.display?2u:1u;
                 *maximumVersion=(std::max)(*maximumVersion,version);operations.Append(JsonValue::CreateStringValue(change.id));
             }else operations.Append(sync_pack(change,true));
-            for(const auto* state:{&change.before,&change.after}){const auto images=sync_images(*state);names.insert(images.begin(),images.end());}
+            {const auto images=sync_change_images(imageArchive,change);names.insert(images.begin(),images.end());}
         }
         JsonArray assets;const auto archive=sync_archive(directory,id);
         const auto visible=sync_deleted(directory,sync_stem(id))?std::set<std::wstring>{}:sync_images(sync_read_state(manifest,archive));
         for(const auto& name:names){
             if(stop.stop_requested())throw std::runtime_error("Committed export interrupted");
-            std::vector<BYTE> bytes;bool ready=sync_check_image(archive,name,bytes);
-            if(visible.contains(name)){std::vector<BYTE> native;ready=sync_check_image(directory+L"\\"+sync_stem(id),name,native)&&ready;}
+            std::vector<BYTE> bytes;bool ready=maximumVersion?sync_verified_image(archive,name):sync_check_image(archive,name,bytes);
+            if(visible.contains(name)){std::vector<BYTE> native;const auto bundle=directory+L"\\"+sync_stem(id);
+                ready=(maximumVersion?sync_verified_image(bundle,name):sync_check_image(bundle,name,native))&&ready;}
             if(!ready){if(maximumVersion)continue;throw std::runtime_error("Missing archived image");}
             // Committed originals survive image loss; asset membership is fresh complete payload proof.
             if(maximumVersion){assets.Append(JsonValue::CreateStringValue(name));continue;}
@@ -393,6 +415,20 @@ static bool sync_import(const std::wstring& storagePath,const std::wstring& pack
             const auto archive=sync_archive(directory,id);
             std::map<std::wstring,Change> unionSet;
             std::vector<std::wstring> committed;
+            // A full snapshot repeats notes whose operations are all committed and verified in this audit window.
+            // Without images, dependencies or a pending receipt, the general path below reduces to its ids==committed
+            // no-op; skip loading and copying their complete histories.
+            if(!dependencies&&manifests.contains(id)){
+                const auto carried=images.find(id);
+                if(carried==images.end()||carried->second.empty()){
+                    const auto known=sync_ids(manifests.at(id));auto& cache=sync_journal_cache();
+                    const bool ordered=std::adjacent_find(known.begin(),known.end(),[](const auto& a,const auto& b){return !(a<b);})==known.end();
+                    bool settled=ordered&&std::all_of(additions.begin(),additions.end(),[&](const Change& c){
+                        return std::binary_search(known.begin(),known.end(),c.id)&&cache.Find(archive,c.id,nullptr);});
+                    if(settled&&sync_exists(archive,L"pending.json")){JsonObject waiting;settled=sync_read(archive,L"pending.json",waiting)&&sync_ids(waiting).empty();}
+                    if(settled){result.applied+=additions.size();continue;}
+                }
+            }
             if(manifests.contains(id)){committed=sync_ids(manifests.at(id));for(auto& c:sync_load(directory,id,committed))unionSet.emplace(c.id,std::move(c));}
             JsonObject pending;
             if(sync_exists(archive,L"pending.json")){
@@ -412,9 +448,13 @@ static bool sync_import(const std::wstring& storagePath,const std::wstring& pack
             }
             if(ids==committed){
                 // Repair current image files without replaying history over later edits or rewriting metadata.
-                const auto visible=sync_deleted(directory,sync_stem(id))?std::set<std::wstring>{}:sync_images(sync_read_state(manifests.at(id),archive));
+                // Resolve the visible image set only when this package carries images to repair; reading the
+                // committed state decrypts the note source, which unchanged notes in a full snapshot do not need.
+                std::optional<std::set<std::wstring>> visible;
                 const auto bundle=directory+L"\\"+sync_stem(id);bool touched=false;
-                auto restore=[&](const std::wstring& name){if(!visible.contains(name))return;std::vector<BYTE> bytes;
+                auto restore=[&](const std::wstring& name){
+                    if(!visible)visible=sync_deleted(directory,sync_stem(id))?std::set<std::wstring>{}:sync_images(sync_read_state(manifests.at(id),archive));
+                    if(!visible->contains(name))return;std::vector<BYTE> bytes;
                     auto relative=name;std::replace(relative.begin(),relative.end(),L'/',L'\\');const bool missing=!sync_exists(bundle,relative);
                     if(!tcard_asset::read(archive,name,bytes)||!tcard_asset::publish(bundle,name,bytes,true))throw std::runtime_error("Cannot repair native image");touched|=missing;};
                 for(const auto& [name,bytes]:images[id])restore(name);

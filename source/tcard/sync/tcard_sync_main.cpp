@@ -121,10 +121,13 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     HANDLE waits[]={stop.value,normalStop.value,parent.value};std::wstring accepted,observed,published;
     std::wstring reported;size_t reportedPending=0,ownerPending=0,reportedOwnerPending=0;
     bool ownerApplied=false,reportedOwnerApplied=false;ULONGLONG reportedAt=0; tcard_bridge::Stamp reportedStamp;
+    // Mailbox stamps include volume, file ID, size and creation/write times, so replacement or loss is seen on every poll.
+    // Re-reading or rewriting an unchanged multi-megabyte packet is only a bounded integrity audit.
+    constexpr ULONGLONG mailboxAuditMs=10*60*1000;
     auto report=[&](const wchar_t* phase,size_t pending){
         const auto now=GetTickCount64();tcard_bridge::Stamp stamp;
         if(reported==phase&&reportedPending==pending&&reportedOwnerPending==ownerPending&&reportedOwnerApplied==ownerApplied&&
-            reportedAt&&now-reportedAt<60000&&tcard_bridge::Fingerprint(mailbox,L"status.json",stamp)&&stamp==reportedStamp)return true;
+            reportedAt&&now-reportedAt<mailboxAuditMs&&tcard_bridge::Fingerprint(mailbox,L"status.json",stamp)&&stamp==reportedStamp)return true;
         JsonObject status;status.Insert(L"Pid",JsonValue::CreateNumberValue(GetCurrentProcessId()));
         status.Insert(L"Port",JsonValue::CreateNumberValue(listener?listener->Port():0));status.Insert(L"Status",JsonValue::CreateStringValue(phase));
         status.Insert(L"Pending",JsonValue::CreateNumberValue(static_cast<double>(pending)));
@@ -251,10 +254,26 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
     tcard_dependencies::Recovery dependencyRecovery;bool dependencyProgress=true;
     tcard_source_owner::Provider sourceOwner(mailbox,replica,applicationOwner,workerOwner,dependencyGroup,dependencyNode,parent.value);
     report(L"sync.ready",0);ULONGLONG retryAt=0,purgeAt=GetTickCount64()+60000;Result recovered;bool resumed=true;
+    // Mailbox publications and replica journal changes wake the loop. A settled idle loop waits up to 2 s;
+    // failures, pending work and the 2 s after any notification keep the previous 300 ms retry cadence.
+    Watch mailboxWatch;bool journalChanged=false,settled=false;ULONGLONG activeUntil=0;
     for(;;){
-        const auto wake=WaitForMultipleObjects(3,waits,FALSE,300);
+        if(mailboxWatch.value==INVALID_HANDLE_VALUE)
+            mailboxWatch.value=FindFirstChangeNotificationW(mailbox.c_str(),FALSE,FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_SIZE|FILE_NOTIFY_CHANGE_LAST_WRITE);
+        HANDLE handles[5]={waits[0],waits[1],waits[2]};DWORD count=3;
+        if(mailboxWatch.value!=INVALID_HANDLE_VALUE)handles[count++]=mailboxWatch.value;
+        if(watch.value!=INVALID_HANDLE_VALUE)handles[count++]=watch.value;
+        const bool idle=settled&&count==5&&GetTickCount64()>=activeUntil;settled=false;
+        const auto wake=WaitForMultipleObjects(count,handles,FALSE,idle?2000:300);
         if(wake==WAIT_FAILED)throw std::runtime_error("UI owner wait failed");
-        if(wake!=WAIT_TIMEOUT)break;
+        if(wake!=WAIT_TIMEOUT){
+            if(wake<WAIT_OBJECT_0+3||wake>=WAIT_OBJECT_0+count)break;
+            // Rearm here so a later early retry cannot spin on a still-signaled handle.
+            HANDLE& fired=handles[wake-WAIT_OBJECT_0]==mailboxWatch.value?mailboxWatch.value:watch.value;
+            if(&fired==&watch.value)journalChanged=true;
+            if(!FindNextChangeNotification(fired)){FindCloseChangeNotification(fired);fired=INVALID_HANDLE_VALUE;}
+            activeUntil=GetTickCount64()+2000;
+        }
         if(!dependencyGroup.empty())sourceOwner.Step();
         if(GetTickCount64()>=retryAt){resumed=RetryChanges(replica,recovered);retryAt=GetTickCount64()+(resumed&&!recovered.pending?60000:3000);if(recovered.applied){exportNeeded=true;dependencyProgress=true;}}
         if(!dependencyGroup.empty())try{
@@ -268,7 +287,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         size_t pending=peerPending+recovered.pending;std::wstring readOutgoing;
         tcard_bridge::Stamp nextOutgoing;const auto pollAt=GetTickCount64();
         const bool present=tcard_bridge::Fingerprint(mailbox,L"outgoing.json",nextOutgoing);
-        if(present&&(!outgoingAt||!(nextOutgoing==outgoingStamp)||pollAt-outgoingAt>=60000)){
+        if(present&&(!outgoingAt||!(nextOutgoing==outgoingStamp)||pollAt-outgoingAt>=mailboxAuditMs)){
             if(tcard_bridge::Read(mailbox,L"outgoing.json",readOutgoing)){cachedOutgoing=std::move(readOutgoing);outgoingHash=tcard_bridge::Hash(cachedOutgoing);outgoingBatched=tcard_mail::Batched(cachedOutgoing);outgoingAt=pollAt;outgoingStamp=nextOutgoing;}
             else{outgoingAt=0;cachedOutgoing.clear();outgoingHash.clear();outgoingBatched=false;}
         }
@@ -276,7 +295,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
             const auto& outgoing=cachedOutgoing;const auto& hash=outgoingHash;
             tcard_bridge::Stamp commitStamp;const bool batchPacket=outgoingBatched;
             const bool repair=batchPacket&&(!tcard_bridge::Fingerprint(mailbox,L"outgoing-commit.json",commitStamp)||
-                !(commitStamp==committedOutgoingStamp)||pollAt-committedOutgoingAt>=60000);
+                !(commitStamp==committedOutgoingStamp)||pollAt-committedOutgoingAt>=mailboxAuditMs);
             if(hash!=accepted||repair){Result result;
                 std::wstring delta=outgoing;selection::Inventory required;const bool batch=outgoingBatched;bool sourceAtomic=false,dependency=false;tcard_dependencies::Context expected;
                 if(batch)try{
@@ -315,14 +334,15 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         if(watch.value==INVALID_HANDLE_VALUE){
             watch.value=FindFirstChangeNotificationW((replica+L"\\_sync").c_str(),TRUE,FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_DIR_NAME|FILE_NOTIFY_CHANGE_SIZE|FILE_NOTIFY_CHANGE_LAST_WRITE);
             exportNeeded=true;
-        }else if(WaitForSingleObject(watch.value,0)!=WAIT_TIMEOUT){
-            exportNeeded=true;dependencyProgress=true;connections->Changed();if(!FindNextChangeNotification(watch.value)){FindCloseChangeNotification(watch.value);watch.value=INVALID_HANDLE_VALUE;}
+        }else if(journalChanged||WaitForSingleObject(watch.value,0)!=WAIT_TIMEOUT){
+            const bool signaled=!journalChanged;journalChanged=false;
+            exportNeeded=true;dependencyProgress=true;connections->Changed();if(signaled&&!FindNextChangeNotification(watch.value)){FindCloseChangeNotification(watch.value);watch.value=INVALID_HANDLE_VALUE;}
         }
         const auto now=GetTickCount64();
         // Only the owner may publish application evidence; private-replica receipt is insufficient.
         tcard_bridge::Stamp applied;
         if(!tcard_bridge::Fingerprint(mailbox,L"applied.json",applied)){ownerApplied=false;ownerBatches=false;ownerObjects=false;ownerAtomic=false;ownerDependencies=false;ownerNode.clear();appliedOwner={};appliedAt=0;}
-        else if(!appliedAt||!(applied==appliedStamp)||now-appliedAt>=60000){
+        else if(!appliedAt||!(applied==appliedStamp)||now-appliedAt>=mailboxAuditMs){
             ownerApplied=tcard_ack::Read(mailbox,applicationOwner,appliedOwner,&ownerBatches,&ownerObjects,&ownerAtomic,&ownerDependencies,&ownerNode,&ownerDependencyVersion);if(appliedAt&&!(applied==appliedStamp))connections->Changed();appliedStamp=applied;appliedAt=ownerApplied?now:0;
             // Retain newer owner intent even while an older outgoing slot is pinned.
             if(ownerApplied)selection::Include(outgoingRequired,appliedOwner);
@@ -342,6 +362,9 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
                 if(remoteTarget.empty()){exportNeeded=false;ownerPending=remoteInbox.targets.size();report(L"sync.pending",pending);continue;}
             }
         }catch(...){report(L"sync.failed",pending);continue;}
+        // An owner that advertises batches receives only operations missing from its committed receipt
+        // instead of a full replica snapshot after every journal change.
+        if(!incomingBatches&&ownerApplied&&ownerBatches){incomingBatches=true;exportNeeded=true;}
         if(incomingBatches){
             const tcard_dependencies::Context dependencyChannel{keys.space,dependencyGroup,dependencyNode,ownerNode,L"",ownerDependencyVersion};
             Result result;const bool changed=exportNeeded||now-auditedAt>=auditMs;
@@ -378,7 +401,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
             if(receiveRevision!=tcard_remote::revision.load()){exportNeeded=true;continue;}
             tcard_bridge::Stamp stamp;
             bool retained=tcard_bridge::Fingerprint(mailbox,L"incoming.json",stamp)&&stamp==incomingStamp;
-            if(retained&&now-incomingAuditAt>=60000){std::wstring verified;retained=tcard_bridge::Read(mailbox,L"incoming.json",verified)&&tcard_bridge::Hash(verified)==cachedHash;incomingAuditAt=now;}
+            if(retained&&now-incomingAuditAt>=mailboxAuditMs){std::wstring verified;retained=tcard_bridge::Read(mailbox,L"incoming.json",verified)&&tcard_bridge::Hash(verified)==cachedHash;incomingAuditAt=now;}
             if(cachedHash!=published||!retained){
                 if(receiveRevision!=tcard_remote::revision.load()){exportNeeded=true;continue;}
                 if(!tcard_bridge::Publish(mailbox,L"incoming.json",cachedIncoming)){report(L"sync.failed",pending);continue;}
@@ -387,6 +410,7 @@ int sync_worker(const std::wstring& profile,const Credentials& keys,unsigned sho
         }
         ownerPending=selection::Missing(expectedOwner,appliedOwner);pending+=selection::Missing(outgoingRequired,expectedOwner);
         if(pending&&wcscmp(phase,L"sync.ready")==0)phase=L"sync.pending";
+        settled=!pending&&!budgetRetryAt&&!exportNeeded&&!journalChanged&&wcscmp(phase,L"sync.ready")==0;
         report(phase,pending);
     }
     sourceCompletion.request_stop();if(exchanges.joinable())exchanges.request_stop();

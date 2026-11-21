@@ -61,11 +61,28 @@ inline bool Commit(const std::wstring& storage,const std::wstring& mailbox,const
 struct Producer {
     std::wstring packet,header,hash,receiver;Inventory known;bool done=false,ackPresent=false,ackValid=false,cleanupPending=false;
     tcard_bridge::Stamp stamp,ackStamp;ULONGLONG audited=0;
+    // Packet and receipt stamps (volume, file ID, size, times) detect replacement on every poll; re-reading and
+    // re-validating an unchanged multi-megabyte packet is only a bounded integrity audit.
+    static constexpr ULONGLONG kAuditMs=10*60*1000;
+    // Validating a retained packet re-checks every carried operation; a full first batch takes ~0.6 s and was
+    // repeated on each sender poll. Version 1/2 results depend only on the packet bytes (hash), group and object mode.
+    std::wstring decodedKey,decodedDelta;Inventory decodedRequired;
+    std::wstring DecodeKey(const std::wstring& group,bool objects)const{return hash.empty()?L"":hash+L"|"+group+(objects?L"|1":L"|0");}
+    bool Decoded(const std::wstring& group,bool objects,std::wstring& delta,Inventory* required=nullptr)const
+    {
+        const auto key=DecodeKey(group,objects);if(key.empty()||key!=decodedKey)return false;
+        delta=decodedDelta;if(required)*required=decodedRequired;return true;
+    }
+    void Remember(const std::wstring& group,bool objects,const std::wstring& delta,const Inventory& required)
+    {
+        if(JsonObject::Parse(packet).GetNamedNumber(L"BatchVersion")==3){decodedKey.clear();return;}
+        decodedKey=DecodeKey(group,objects);decodedDelta=delta;decodedRequired=required;
+    }
     bool Changed(const std::wstring& mailbox,const std::wstring& leaf,const std::wstring& receipt,const std::wstring& owner)const
     {
         tcard_bridge::Stamp current,ack;const bool present=tcard_bridge::Fingerprint(mailbox,receipt,ack);
         return cleanupPending||packet.empty()||receiver!=owner||!tcard_bridge::Fingerprint(mailbox,leaf,current)||!(current==stamp)||
-            present!=ackPresent||(present&&!(ack==ackStamp))||GetTickCount64()-audited>=60000;
+            present!=ackPresent||(present&&!(ack==ackStamp))||GetTickCount64()-audited>=kAuditMs;
     }
 };
 inline bool Produce(const std::wstring& storage,const std::wstring& mailbox,const std::wstring& leaf,const std::wstring& receipt,
@@ -76,7 +93,7 @@ inline bool Produce(const std::wstring& storage,const std::wstring& mailbox,cons
         if(!changed&&!state.Changed(mailbox,leaf,receipt,owner))return true;
         const auto now=GetTickCount64();auto next=state;tcard_bridge::Stamp stamp,ack;
         if(tcard_bridge::Fingerprint(mailbox,leaf,stamp)){
-            if(next.packet.empty()||next.receiver!=owner||!(stamp==next.stamp)||now-next.audited>=60000){
+            if(next.packet.empty()||next.receiver!=owner||!(stamp==next.stamp)||now-next.audited>=Producer::kAuditMs){
                 std::wstring packet;if(!tcard_bridge::Read(mailbox,leaf,packet))throw std::runtime_error("Retained mailbox unavailable");
                 if(Batched(packet)){
                     std::wstring delta;
@@ -93,17 +110,23 @@ inline bool Produce(const std::wstring& storage,const std::wstring& mailbox,cons
         next.receiver=owner;next.ackPresent=tcard_bridge::Fingerprint(mailbox,receipt,ack);next.ackStamp=ack;next.ackValid=false;next.known={};
         if(next.ackPresent&&!next.packet.empty()){
             std::wstring text;if(tcard_bridge::Read(mailbox,receipt,text))try{
-                next.known=Receipt(text,group,owner,next.hash);std::wstring delta;
-                const auto expected=dependency&&JsonObject::Parse(next.packet).GetNamedNumber(L"BatchVersion")==3?tcard_dependency_mail::Expected(next.packet,*dependency,leaf==L"outgoing.json"):tcard_dependencies::Context{};
-                const auto required=Decode(next.packet,group,delta,objects,dependency?&expected:nullptr);
+                next.known=Receipt(text,group,owner,next.hash);std::wstring delta;Inventory required;
+                if(!next.Decoded(group,objects,delta,&required)){
+                    const auto expected=dependency&&JsonObject::Parse(next.packet).GetNamedNumber(L"BatchVersion")==3?tcard_dependency_mail::Expected(next.packet,*dependency,leaf==L"outgoing.json"):tcard_dependencies::Context{};
+                    required=Decode(next.packet,group,delta,objects,dependency?&expected:nullptr);next.Remember(group,objects,delta,required);
+                }
                 next.ackValid=selection::Missing(required,next.known)==0;
             }catch(...){}
         }
         if(next.known!=state.known)next.done=false;
         next.audited=now;
         if(!next.packet.empty()&&!next.ackValid){
-            std::wstring delta;const auto expected=dependency&&JsonObject::Parse(next.packet).GetNamedNumber(L"BatchVersion")==3?tcard_dependency_mail::Expected(next.packet,*dependency,leaf==L"outgoing.json"):tcard_dependencies::Context{};
-            Decode(next.packet,group,delta,objects,dependency?&expected:nullptr);
+            std::wstring delta;tcard_dependencies::Context expected;
+            // A remembered decode is never a version-3 packet, so its default context is not used for staging.
+            if(!next.Decoded(group,objects,delta)){
+                expected=dependency&&JsonObject::Parse(next.packet).GetNamedNumber(L"BatchVersion")==3?tcard_dependency_mail::Expected(next.packet,*dependency,leaf==L"outgoing.json"):tcard_dependencies::Context{};
+                const auto required=Decode(next.packet,group,delta,objects,dependency?&expected:nullptr);next.Remember(group,objects,delta,required);
+            }
             if(tcard_dependency_mail::Referenced(delta))tcard_dependency_mail::Stage(storage,mailbox,leaf,delta,expected);
             else if(tcard_objects::Referenced(delta))tcard_blobs::Stage(storage,Objects(mailbox,leaf,true),delta);
             state=std::move(next);return true;

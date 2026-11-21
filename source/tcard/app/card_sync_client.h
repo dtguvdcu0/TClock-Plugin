@@ -118,7 +118,7 @@ class Client {
     tcard_mail::Producer batch_;bool batchCap_=false,objectCap_=false,sourceCap_=false,dependencyCap_=false,batchMode_=false;
     std::wstring dependencySpace_,dependencyGroup_,dependencyNode_;unsigned dependencyVersion_=1;
     struct ReceiveTask {
-        std::atomic_bool done=false;bool okay=false;std::wstring hash;Stamp stamp;
+        std::atomic_bool done=false;bool okay=false;std::wstring hash;Stamp stamp,appliedStamp;bool appliedKnown=false;
         std::vector<tcard_sync::PreparedNote> notes;size_t next=0;
         bool batch=false,objects=false,dependencies=false;tcard_mail::Inventory required;tcard_dependencies::Context context;
         std::wstring target,delta;tcard_native::ReceiveResult native;std::unique_ptr<tcard_native::Activation> activation;
@@ -136,6 +136,7 @@ class Client {
                 // Fresh committed byte verification and encrypted receipts stay off the UI thread.
                 std::wstring header;task->okay=tcard_mail::Commit(storage,mailbox,L"incoming-commit.json",task->hash,task->required,header,stop)&&!stop.stop_requested()&&
                     tcard_ack::PublishInventory(mailbox,storage,header,batches,objects,true,dependencies,version);
+                task->appliedKnown=task->okay&&Fingerprint(mailbox,L"applied.json",task->appliedStamp);
             }catch(...){task->okay=false;}task->done=true;
         });return true;}catch(...){task->done=true;task->committing=false;task->okay=true;return false;}
     }
@@ -197,11 +198,12 @@ class Client {
             task->worker=std::jthread([task,storage,mailbox,profile,owner,changed,objects,origins,dependencies,channel](std::stop_token stop){
                 try{winrt::init_apartment(winrt::apartment_type::multi_threaded);struct Apartment{~Apartment(){winrt::uninit_apartment();}} apartment;
                     std::wstring header;unsigned version=0;
-                    task->okay=true;
-                    if(dependencies){task->okay=tcard_sync::ExportCommittedInventory(storage,header,task->result,version);
-                        if(task->okay)Reclaim(storage,profile,channel.space,channel.group,header,task->custody,stop);}
+                    // Capture committed evidence once. Produce is read-only, so this inventory remains a subset of the
+                    // committed state afterwards and publishing it as applied evidence stays conservative.
+                    task->okay=tcard_sync::ExportCommittedInventory(storage,header,task->result,version);
+                    if(task->okay&&dependencies)Reclaim(storage,profile,channel.space,channel.group,header,task->custody,stop);
                     task->okay=task->okay&&!stop.stop_requested()&&tcard_mail::Produce(storage,mailbox,L"outgoing.json",L"outgoing-commit.json",owner,true,changed,task->batch,task->result,objects,origins,dependencies?&channel:nullptr)&&
-                        tcard_sync::ExportCommittedInventory(storage,header,task->result,version)&&tcard_ack::PublishInventory(mailbox,storage,header,true,objects,true,dependencies,channel.version)&&
+                        tcard_ack::PublishInventory(mailbox,storage,header,true,objects,true,dependencies,channel.version)&&
                         Fingerprint(mailbox,L"outgoing.json",task->stamp)&&Fingerprint(mailbox,L"applied.json",task->appliedStamp);
                     task->hash=task->batch.hash;
                 }catch(...){task->okay=false;}task->done=true;
@@ -518,13 +520,17 @@ public:
         if(mailbox_.empty())mailbox_=Mailbox(profile_);
         Stamp stamp;const auto now=GetTickCount64();
         if(!Fingerprint(mailbox_,L"status.json",stamp)){mailbox_.clear();return false;}
-        if(readyAt_&&now-readyAt_<60000&&stamp==readyStamp_){status=readyPhase_;return true;}
+        // The stamp detects replacement on every poll; re-parsing unchanged status is a bounded audit.
+        if(readyAt_&&now-readyAt_<kAuditMs&&stamp==readyStamp_){status=readyPhase_;return true;}
         std::wstring text;if(!Read(mailbox_,L"status.json",text))return false;
         winrt::Windows::Data::Json::JsonObject object;
         if(!winrt::Windows::Data::Json::JsonObject::TryParse(text,object)||object.GetNamedNumber(L"Pid",0)!=pid_)return false;
         const std::wstring phase=object.GetNamedString(L"Status",L"sync.failed").c_str();
         status=phase==L"sync.ready"||phase==L"sync.pending"||phase==L"sync.peer_failed"||phase==L"sync.port_busy"?phase:L"sync.failed";
         batchCap_=object.GetNamedBoolean(L"MailboxBatches",false);objectCap_=batchCap_&&object.GetNamedBoolean(L"MailboxObjects",false);sourceCap_=objectCap_&&object.GetNamedBoolean(L"MailboxSourceTarget",false);
+        // Receipt-based batches carry only operations the worker has not committed. Full snapshots rewrote and
+        // re-imported every note on each local edit, so use batches whenever this worker advertises them.
+        if(batchCap_)batchMode_=true;
         dependencyCap_=false;dependencyVersion_=1;dependencySpace_.clear();dependencyGroup_.clear();dependencyNode_.clear();
         if(sourceCap_&&object.GetNamedBoolean(L"MailboxDependencies",false))try{
             tcard_crypto::Keys keys;if(!tcard_storage::LoadKey(profile_,keys))throw std::runtime_error("Dependency profile key unavailable");
@@ -629,7 +635,8 @@ public:
         if(!receiveTask_){
             Stamp stamp;
             const bool freshStamp=Fingerprint(mailbox_,L"incoming.json",stamp)&&
-                (!receivedValid_||!(stamp==receivedStamp_)||now-receivedAt_>=60000);
+                // An unchanged multi-megabyte packet is re-read and decrypted only as a bounded audit.
+                (!receivedValid_||!(stamp==receivedStamp_)||now-receivedAt_>=kAuditMs);
             if(freshStamp&&(receivedValid_||!(stamp==receivedStamp_)||now>=retryAt_)){
                 receiveTask_=std::make_unique<ReceiveTask>();auto* task=receiveTask_.get();task->stamp=stamp;const auto mailbox=mailbox_;const auto dependencies=dependencyCap_;
                 const tcard_dependencies::Context channel{dependencySpace_,dependencyGroup_,dependencyNode_,dependencies?tcard_bootstrap::Node(storage):L"",L"",dependencyVersion_};
@@ -660,6 +667,7 @@ public:
                 receivedValid_=false;status=L"sync.apply_failed";return false;
             }
             received_=receiveTask_->hash;receivedValid_=true;atomicWaiting_=false;if(!receiveTask_->target.empty())exported_=0;
+            if(receiveTask_->appliedKnown)appliedStamp_=receiveTask_->appliedStamp;
             receivedStamp_=receiveTask_->stamp;receivedAt_=now;receiveTask_.reset();return false;
         }
         if(receiveTask_&&receiveTask_->proving&&!receiveTask_->okay){

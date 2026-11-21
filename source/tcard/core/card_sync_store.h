@@ -199,8 +199,53 @@ inline Change sync_unpack(const JsonObject& object,const std::wstring& archive,b
     if((c.before.dates||c.after.dates?3:c.before.display||c.after.display?2:1)!=version)throw std::runtime_error("Operation display version mismatch");
     if(c.id!=sync_identify(c))throw std::runtime_error("Invalid operation hash");return c;
 }
+// Committed operations are immutable: sync_unpack verifies that the ID is the hash of the decoded content.
+// Full exports/imports otherwise re-read and decrypt every journal file of every note on each local edit.
+// Keep verified decoded copies per archive path. Missing-file detection and repair (sync_store) are deferred
+// to a bounded audit: the cache is discarded every 10 minutes and whenever it exceeds its memory budget.
+struct SyncFileStamp {ULONGLONG size=0,created=0,written=0;bool operator==(const SyncFileStamp&)const=default;};
+inline bool sync_file_stamp(const std::wstring& path,SyncFileStamp& stamp)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data{};if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&data))return false;
+    const auto value=[](DWORD high,DWORD low){return (static_cast<ULONGLONG>(high)<<32)|low;};
+    stamp={value(data.nFileSizeHigh,data.nFileSizeLow),value(data.ftCreationTime.dwHighDateTime,data.ftCreationTime.dwLowDateTime),value(data.ftLastWriteTime.dwHighDateTime,data.ftLastWriteTime.dwLowDateTime)};return true;
+}
+struct SyncJournalCache {
+    std::mutex mutex;std::map<std::wstring,Change> entries;std::map<std::wstring,std::set<std::wstring>> images;size_t bytes=0;ULONGLONG created=0;
+    // Decoded manifest text or verified image evidence by path, valid only while the file stamp is unchanged.
+    std::map<std::wstring,std::pair<SyncFileStamp,std::wstring>> files;
+    static constexpr ULONGLONG kAuditMs=10*60*1000;static constexpr size_t kBudget=64*1024*1024;
+    static std::wstring Key(const std::wstring& archive,const std::wstring& id){return archive+L"|"+id;}
+    static size_t Size(const Change& c){
+        size_t size=512+(c.id.size()+c.note.size()+c.actor.size())*sizeof(wchar_t);for(const auto& parent:c.parents)size+=parent.size()*sizeof(wchar_t);
+        for(const auto* state:{&c.before,&c.after})size+=(state->source.size()+state->title.size())*sizeof(wchar_t);return size;
+    }
+    void Clear(){entries.clear();images.clear();files.clear();bytes=0;}
+    bool FindFile(const std::wstring& path,const SyncFileStamp& stamp,std::wstring* text){
+        std::lock_guard lock(mutex);Audit();const auto found=files.find(path);if(found==files.end()||!(found->second.first==stamp))return false;
+        if(text)*text=found->second.second;return true;
+    }
+    void StoreFile(const std::wstring& path,const SyncFileStamp& stamp,std::wstring text){
+        std::lock_guard lock(mutex);Audit();const auto size=256+(path.size()+text.size())*sizeof(wchar_t);if(size>kBudget)return;
+        if(bytes+size>kBudget)Clear();auto& slot=files[path];slot={stamp,std::move(text)};bytes+=size;
+    }
+    void Audit(){const auto now=GetTickCount64();if(!created||now-created>=kAuditMs){Clear();created=now;}}
+    bool Find(const std::wstring& archive,const std::wstring& id,Change* value){
+        std::lock_guard lock(mutex);Audit();const auto found=entries.find(Key(archive,id));if(found==entries.end())return false;
+        if(value)*value=found->second;return true;
+    }
+    void Store(const std::wstring& archive,const Change& value){
+        std::lock_guard lock(mutex);Audit();const auto size=Size(value);if(size>kBudget)return;
+        if(bytes+size>kBudget)Clear();
+        if(entries.emplace(Key(archive,value.id),value).second)bytes+=size;
+    }
+};
+inline SyncJournalCache& sync_journal_cache(){static SyncJournalCache cache;return cache;}
 inline bool sync_store(const std::wstring& directory,const Change& c)
 {
+    // A verified read in this audit window proves the immutable operation content. Still confirm the journal
+    // file itself: trash purge can remove an archive and a peer may resend the same operation later.
+    if(const auto archive=sync_archive(directory,c.note);sync_journal_cache().Find(archive,c.id,nullptr)&&sync_exists(archive,c.id+L".json"))return true;
     if(!sync_prepare(directory,c.note))return false;
     const auto archive=sync_archive(directory,c.note);
     for(const auto* state:{&c.before,&c.after}){
@@ -210,8 +255,10 @@ inline bool sync_store(const std::wstring& directory,const Change& c)
 }
 inline std::vector<Change> sync_load(const std::wstring& directory,const std::wstring& note,const std::vector<std::wstring>& ids)
 {
-    std::vector<Change> changes;const auto archive=sync_archive(directory,note);
-    for(const auto& id:ids){JsonObject object;if(!sync_read(archive,id+L".json",object))throw std::runtime_error("Missing operation");auto c=sync_unpack(object,archive,false);if(c.note!=note||c.id!=id)throw std::runtime_error("Wrong journal identity");changes.push_back(std::move(c));}
+    std::vector<Change> changes;const auto archive=sync_archive(directory,note);auto& cache=sync_journal_cache();
+    for(const auto& id:ids){Change cached;if(cache.Find(archive,id,&cached)&&cached.note==note){changes.push_back(std::move(cached));continue;}
+        JsonObject object;if(!sync_read(archive,id+L".json",object))throw std::runtime_error("Missing operation");auto c=sync_unpack(object,archive,false);if(c.note!=note||c.id!=id)throw std::runtime_error("Wrong journal identity");
+        cache.Store(archive,c);changes.push_back(std::move(c));}
     return changes;
 }
 inline std::vector<std::wstring> sync_heads(const std::vector<Change>& changes)
@@ -232,6 +279,19 @@ struct SyncImages {
         return 0;
     }
 };
+inline std::set<std::wstring> sync_images(const Snapshot& state);
+// Image links of a verified operation's before/after states. The ID is the content hash, so the parsed set is
+// immutable; inventory captures otherwise re-parse every historical state of every note.
+inline std::set<std::wstring> sync_change_images(const std::wstring& archive,const Change& c)
+{
+    auto& cache=sync_journal_cache();const auto key=SyncJournalCache::Key(archive,c.id);
+    {std::lock_guard lock(cache.mutex);cache.Audit();if(const auto found=cache.images.find(key);found!=cache.images.end())return found->second;}
+    auto names=sync_images(c.before);for(auto& name:sync_images(c.after))names.insert(std::move(name));
+    size_t size=128+key.size()*sizeof(wchar_t);for(const auto& name:names)size+=64+name.size()*sizeof(wchar_t);
+    std::lock_guard lock(cache.mutex);cache.Audit();if(size>SyncJournalCache::kBudget)return names;
+    if(cache.bytes+size>SyncJournalCache::kBudget)cache.Clear();
+    if(cache.images.emplace(key,names).second)cache.bytes+=size;return names;
+}
 inline std::set<std::wstring> sync_images(const Snapshot& state)
 {
     SyncImages images;

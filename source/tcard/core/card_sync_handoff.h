@@ -32,7 +32,7 @@ struct Sender {
     bool Changed(const std::wstring& mailbox,const std::wstring& receiver,const selection::Inventory& native)const
     {
         tcard_bridge::Stamp next,receipt;const bool present=tcard_bridge::Fingerprint(mailbox,L"incoming-custody.json",receipt);
-        return packet.empty()||owner!=receiver||applied!=native||!tcard_bridge::Fingerprint(mailbox,L"incoming.json",next)||!(next==stamp)||present!=custodyPresent||(present&&!(receipt==custody))||GetTickCount64()-audit>=60000;
+        return packet.empty()||owner!=receiver||applied!=native||!tcard_bridge::Fingerprint(mailbox,L"incoming.json",next)||!(next==stamp)||present!=custodyPresent||(present&&!(receipt==custody))||GetTickCount64()-audit>=10*60*1000; // Stamps detect changes; bounded audit.
     }
 };
 inline bool Produce(const std::wstring& storage,const std::wstring& mailbox,const std::wstring& owner,const selection::Inventory& applied,bool changed,Sender& state,Result& result,const std::wstring& remoteTarget=L"",ULONGLONG receiveRevision=0,const tcard_dependencies::Context* dependency=nullptr)
