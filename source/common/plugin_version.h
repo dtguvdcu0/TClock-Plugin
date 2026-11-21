@@ -9,6 +9,7 @@
 #define SAMPLE_CHIME_VERSION (1,0,0,0)
 #define SAMPLE_RENDER_VERSION (1,0,0,0)
 #define COLOR_SETTINGS2_VERSION (1,0,0,0)
+#define UTILITY_PACK_VERSION (1,0,0,0)
 
 // Tuple expansion works with the Windows resource compiler's traditional preprocessor.
 #define TC_VERSION_PARTS(major, minor, patch, revision) major,minor,patch,revision
