@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <memory>
+#include <map>
 #include <cstdint>
 
 namespace {
@@ -880,6 +881,18 @@ bool card_select_note()
 }
 
 void refresh_preview(){card_preview_draft(nullptr);}
+// Timer refreshes run every second on the UI thread. Never wait there for sync/storage owners,
+// which a startup export or receive can hold for seconds; keep the last resolved root instead.
+std::wstring card_asset_root(const std::wstring& id)
+{
+    static std::map<std::wstring,std::wstring> resolved;
+    std::wstring directory;
+    if(tcard::TryCardDirectory(g_file_path,id,directory)){resolved[id]=directory;return directory;}
+    if(const auto found=resolved.find(id);found!=resolved.end())return found->second;
+    directory=tcard::CardDirectory(g_file_path,id);if(!directory.empty())resolved[id]=directory;
+    return directory;
+}
+
 void card_preview_draft(const tcard::CardRecord* draft)
 {
     if (g_editing&&!draft) return;
@@ -909,7 +922,7 @@ void card_preview_draft(const tcard::CardRecord* draft)
     const COLORREF previewColor = parse_color(card.color);
     const bool colorChanged = previewColor != g_preview_color || !g_preview_brush;
     const bool fontChanged = previousSize != font.size || previousFamily != font.family;
-    const auto assetRoot = g_trash_mode?g_trash_records[static_cast<size_t>(selected)].directory:tcard::CardDirectory(g_file_path, card.id);
+    const auto assetRoot = g_trash_mode?g_trash_records[static_cast<size_t>(selected)].directory:card_asset_root(card.id);
     const bool textChanged = previousText != rendered || previousAssetRoot != assetRoot || (!card.richHtml&&!tcard_md::matches(g_preview, rendered))||previousRich!=card.richHtml;
     const bool titleChanged = previousTitle != card.title;
     if (!colorChanged && !fontChanged && !textChanged && !titleChanged && previousMarkdown == card.markdown) return;
@@ -1067,7 +1080,7 @@ void apply_card_state(CardWindow* entry, const tcard::CardRecord& card)
     state.inheritFontFamily=card.inheritFontFamily;state.inheritFontSize=card.inheritFontSize;
     state.markdown = card.markdown ? TRUE : FALSE;
     state.richHtml=card.richHtml;
-    const auto assetRoot = tcard::CardDirectory(g_file_path, card.id);
+    const auto assetRoot = card_asset_root(card.id);
     if (g_set_card_asset_root) g_set_card_asset_root(entry->handle, assetRoot.c_str(), static_cast<DWORD>(assetRoot.size()));
     g_set_card_text_state(entry->handle, &state);
 }

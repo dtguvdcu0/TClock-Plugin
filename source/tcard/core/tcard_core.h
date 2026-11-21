@@ -70,5 +70,7 @@ bool RetainCardHistory(const std::wstring& filePath, const std::wstring& id, Car
 bool RestoreTrash(const std::wstring& filePath, const std::wstring& token, CardRecord& restored);
 bool RemoveTrash(const std::wstring& filePath, const std::wstring& token);
 std::wstring CardDirectory(const std::wstring& filePath, const std::wstring& id);
+// Non-blocking variant for periodic UI refreshes; false when sync/storage owners are busy.
+bool TryCardDirectory(const std::wstring& filePath, const std::wstring& id, std::wstring& directory);
 
 }

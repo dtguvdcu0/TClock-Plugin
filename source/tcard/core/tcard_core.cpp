@@ -1069,6 +1069,14 @@ std::wstring CardDirectory(const std::wstring& filePath, const std::wstring& id)
     }catch(...){return {};}
 }
 
+bool TryCardDirectory(const std::wstring& filePath, const std::wstring& id, std::wstring& directory)
+{
+    std::unique_lock guard(tcard_sync::sync_mutex,std::try_to_lock);if(!guard.owns_lock())return false;
+    try{tcard_sync::SyncLock lock(tcard_native::Base(filePath),0);if(!lock)return false;
+        directory=storage_directory(filePath) + L"\\" + safe_card_stem(id);return true;
+    }catch(...){return false;}
+}
+
 static bool parse_card_metadata(const JsonObject& object, CardRecord& card)
 {
     card.id = json_string(object, L"Id", L"");
