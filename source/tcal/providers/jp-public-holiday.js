@@ -131,6 +131,9 @@ function buildBaseHolidayMap(year, manifest) {
       dateKey = makeDateKey(year, 9, getAutumnEquinoxDay(year));
     }
     if (dateKey) {
+      if (!isObservedForPostRule(rule) && hasOwn(byDate, dateKey) && byDate[dateKey].observedForPostRule) {
+        continue;
+      }
       byDate[dateKey] = {
         name: rule.name,
         observedForPostRule: isObservedForPostRule(rule)
@@ -139,6 +142,10 @@ function buildBaseHolidayMap(year, manifest) {
     }
   }
   return byDate;
+}
+
+function isPublicBaseHoliday(baseHolidays, dateKey) {
+  return hasOwn(baseHolidays, dateKey) && baseHolidays[dateKey].observedForPostRule;
 }
 
 function getPostRuleStartYear(manifest, kind, defaultValue) {
@@ -160,19 +167,17 @@ function isCitizenHoliday(baseHolidays, manifest, dateKey) {
   if (isSundayDateKey(dateKey)) {
     return false;
   }
-  if (hasOwn(baseHolidays, dateKey)) {
+  if (isPublicBaseHoliday(baseHolidays, dateKey)) {
     return false;
   }
   var prevKey = addDaysToDateKey(dateKey, -1);
   var nextKey = addDaysToDateKey(dateKey, 1);
-  return hasOwn(baseHolidays, prevKey) &&
-    hasOwn(baseHolidays, nextKey) &&
-    baseHolidays[prevKey].observedForPostRule &&
-    baseHolidays[nextKey].observedForPostRule;
+  return isPublicBaseHoliday(baseHolidays, prevKey) &&
+    isPublicBaseHoliday(baseHolidays, nextKey);
 }
 
 function isHolidayWithoutSubstitute(baseHolidays, manifest, dateKey) {
-  return hasOwn(baseHolidays, dateKey) || isCitizenHoliday(baseHolidays, manifest, dateKey);
+  return isPublicBaseHoliday(baseHolidays, dateKey) || isCitizenHoliday(baseHolidays, manifest, dateKey);
 }
 
 function getSubstituteHolidayName(baseHolidays, manifest, dateKey) {
@@ -181,17 +186,14 @@ function getSubstituteHolidayName(baseHolidays, manifest, dateKey) {
   if (parsed.year < startYear) {
     return "";
   }
-  if (hasOwn(baseHolidays, dateKey)) {
+  if (isPublicBaseHoliday(baseHolidays, dateKey)) {
     return "";
   }
   var scanKey = addDaysToDateKey(dateKey, -1);
   while (isHolidayWithoutSubstitute(baseHolidays, manifest, scanKey)) {
-    var holiday = hasOwn(baseHolidays, scanKey) ? baseHolidays[scanKey] : null;
-    if (holiday && holiday.observedForPostRule && holiday.name && isSundayDateKey(scanKey)) {
+    var holiday = isPublicBaseHoliday(baseHolidays, scanKey) ? baseHolidays[scanKey] : null;
+    if (holiday && holiday.name && isSundayDateKey(scanKey)) {
       return holiday.name + "\u632f\u66ff";
-    }
-    if (holiday && !holiday.observedForPostRule) {
-      return "";
     }
     scanKey = addDaysToDateKey(scanKey, -1);
   }
@@ -212,15 +214,15 @@ function getHolidays(year, manifest) {
   var dayValue = new Date(year, 0, 1);
   while (dayValue.getFullYear() === year) {
     var dateKey = makeDateKey(year, dayValue.getMonth() + 1, dayValue.getDate());
-    if (hasOwn(baseHolidays, dateKey)) {
+    var substituteName = "";
+    if (isPublicBaseHoliday(baseHolidays, dateKey)) {
       out.push({ date: dateKey, name: baseHolidays[dateKey].name, kind: "public" });
     } else if (isCitizenHoliday(baseHolidays, manifest, dateKey)) {
       out.push({ date: dateKey, name: "国民の休日", kind: "citizen" });
-    } else {
-      var substituteName = getSubstituteHolidayName(baseHolidays, manifest, dateKey);
-      if (substituteName) {
-        out.push({ date: dateKey, name: substituteName, kind: "substitute" });
-      }
+    } else if ((substituteName = getSubstituteHolidayName(baseHolidays, manifest, dateKey))) {
+      out.push({ date: dateKey, name: substituteName, kind: "substitute" });
+    } else if (hasOwn(baseHolidays, dateKey)) {
+      out.push({ date: dateKey, name: baseHolidays[dateKey].name, kind: "public" });
     }
     dayValue.setDate(dayValue.getDate() + 1);
   }
