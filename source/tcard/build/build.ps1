@@ -92,8 +92,6 @@ if (Test-Path -LiteralPath $languageSource) {
 
 $syncArtifact = Join-Path $buildRoot 'plugins\TCardSync.exe'
 if (-not (Test-Path -LiteralPath $syncArtifact)) { throw 'TCardSync executable was not built.' }
-$icon = Join-Path $tcardRoot 'icon3.ico'
-if (-not (Test-Path -LiteralPath $icon)) { throw "Icon asset not found: $icon" }
-$buildIcon = Join-Path $buildRoot 'plugins\icon3.ico'
-New-Item -ItemType Directory -Path (Split-Path -Parent $buildIcon) -Force | Out-Null
-Copy-Item -LiteralPath $icon -Destination $buildIcon -Force
+# The icon is embedded in TCard.exe through tcard.rc; remove a loose copy left by older builds.
+$staleIcon = Join-Path $buildRoot 'plugins\icon3.ico'
+if (Test-Path -LiteralPath $staleIcon -PathType Leaf) { Remove-Item -LiteralPath $staleIcon -Force }

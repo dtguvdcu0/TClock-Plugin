@@ -2221,15 +2221,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     g_owns_app_icon = g_app_icon != nullptr;
     g_app_icon_small = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, icon_small_width, icon_small_height, 0));
     g_owns_app_icon_small = g_app_icon_small != nullptr;
-    const std::wstring iconPath = module_dir() + L"\\icon3.ico";
-    if (!g_app_icon) {
-        g_app_icon = static_cast<HICON>(LoadImageW(nullptr, iconPath.c_str(), IMAGE_ICON, icon_width, icon_height, LR_LOADFROMFILE));
-        g_owns_app_icon = g_app_icon != nullptr;
-    }
-    if (!g_app_icon_small) {
-        g_app_icon_small = static_cast<HICON>(LoadImageW(nullptr, iconPath.c_str(), IMAGE_ICON, icon_small_width, icon_small_height, LR_LOADFROMFILE));
-        g_owns_app_icon_small = g_app_icon_small != nullptr;
-    }
     if (!g_app_icon) g_app_icon = LoadIconW(nullptr, IDI_APPLICATION);
     if (!g_app_icon_small) g_app_icon_small = LoadIconW(nullptr, IDI_APPLICATION);
     INITCOMMONCONTROLSEX controls{ sizeof(controls), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES };
