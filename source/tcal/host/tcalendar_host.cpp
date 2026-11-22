@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <ActivScp.h>
+#include "../../common/ini_text.h"
 
 namespace tcalendar {
 
@@ -1995,8 +1996,9 @@ bool TCalendarHost::HandleWebMessage(const std::wstring& request_json, std::wstr
             }
             if (!config_.tclock_ini_file_path.empty()) {
                 const wchar_t* tclock_alert = config_.tclock_alert_enabled ? L"1" : L"0";
-                // Persist alert startup toggle to tclock-win11.ini [TCalendar].
-                write_ok = write_ok && (WritePrivateProfileStringW(L"TCalendar", L"Alart", tclock_alert, config_.tclock_ini_file_path.c_str()) != FALSE);
+                // Persist alert startup toggle to tclock-win11.ini [TCalendar]. ini_write_string keeps the host's
+                // UTF-8 encoding; the Profile API would rewrite the file as ANSI.
+                write_ok = write_ok && ini_write_string(config_.tclock_ini_file_path, L"TCalendar", L"Alart", tclock_alert);
             }
             if (!write_ok) {
                 response_json = BuildResponse(false, L"STORAGE_ERROR", L"Failed to write view config to ini", req.request_id, L"null");

@@ -24,6 +24,7 @@
 #include <memory>
 #include <map>
 #include <cstdint>
+#include "../../common/ini_text.h"
 
 namespace {
 
@@ -369,9 +370,8 @@ tcard_fonts::Defaults tcard_resolve_font(const tcard::CardRecord& card)
 std::wstring resolve_tclock_ini()
 {
     const std::wstring cardIni = module_dir() + L"\\TCard.ini";
-    wchar_t configured[32768]{};
-    GetPrivateProfileStringW(L"TCard", L"TClockIni", L"..\\tclock-win11.ini", configured, ARRAYSIZE(configured), cardIni.c_str());
-    std::wstring value(configured);
+    // Read through ini_text so a TClockIni path stays intact whether TCard.ini is UTF-16, UTF-8 or legacy ANSI.
+    std::wstring value = ini_read_string(cardIni, L"TCard", L"TClockIni", L"..\\tclock-win11.ini");
     if (value.size() > 1 && value[1] == L':') return value;
     if (value.rfind(L"\\\\", 0) == 0 || value.rfind(L"//", 0) == 0) return value;
     const size_t slash = cardIni.find_last_of(L"\\/");

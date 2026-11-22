@@ -24,6 +24,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/base.h>
+#include "../../common/ini_text.h"
 
 namespace tcard {
 
@@ -313,7 +314,7 @@ static NetworkState query_network_state()
 
 static std::wstring network_fixed_ssid(const std::wstring& ssid)
 {
-    int width = tcard_sample(L"ssid-width", [] { return static_cast<int>(GetPrivateProfileIntW(L"ETC", L"SSID_AP_Length", 10, g_tclockIniPath.c_str())); });
+    int width = tcard_sample(L"ssid-width", [] { return ini_read_int(g_tclockIniPath, L"ETC", L"SSID_AP_Length", 10); });
     width = std::clamp(width, 1, 64);
     std::wstring value = ssid.substr(0, static_cast<size_t>(width));
     if (value.size() < static_cast<size_t>(width)) value.append(static_cast<size_t>(width) - value.size(), L' ');
@@ -733,11 +734,10 @@ static std::wstring read_custom_text(const std::wstring& path, bool trim = true)
     return trim ? trim_custom_text(value) : value;
 }
 
-static std::wstring custom_setting(const std::wstring& iniPath, const wchar_t* key)
+// The TClock host INI is UTF-8 without BOM; the Profile API would decode Japanese values as ACP.
+static std::wstring custom_setting(const IniText& ini, const wchar_t* key)
 {
-    wchar_t value[4096]{};
-    const DWORD length = GetPrivateProfileStringW(L"CustomVars", key, L"", value, ARRAYSIZE(value), iniPath.c_str());
-    return length ? std::wstring(value, length) : std::wstring();
+    return ini_get_string(ini, L"CustomVars", key, L"");
 }
 
 static std::wstring custom_resolve_path(const std::wstring& iniPath, std::wstring value)
@@ -752,35 +752,36 @@ static std::wstring custom_resolve_path(const std::wstring& iniPath, std::wstrin
 bool ConfigureCustomVariables(const std::wstring& iniPath)
 {
     g_tclockIniPath = iniPath;
-    const std::wstring globalFail = custom_setting(iniPath, L"FailValue");
-    const int globalRefreshSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"CustomVars", L"RefreshSec", 60, iniPath.c_str())), 1, 86400);
-    const int globalMaxChars = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"CustomVars", L"MaxChars", 4096, iniPath.c_str())), 1, 4096);
-    const std::wstring globalWhitespace = custom_setting(iniPath, L"Whitespace");
+    const IniText ini = ini_load_text(iniPath);
+    const std::wstring globalFail = custom_setting(ini, L"FailValue");
+    const int globalRefreshSeconds = std::clamp(ini_get_int(ini, L"CustomVars", L"RefreshSec", 60), 1, 86400);
+    const int globalMaxChars = std::clamp(ini_get_int(ini, L"CustomVars", L"MaxChars", 4096), 1, 4096);
+    const std::wstring globalWhitespace = custom_setting(ini, L"Whitespace");
     for (size_t i = 0; i < g_customVars.size(); ++i) {
         auto& variable = g_customVars[i];
         wchar_t key[64]{};
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uPath", static_cast<unsigned>(i + 1));
-        variable.path = custom_resolve_path(iniPath, custom_setting(iniPath, key));
+        variable.path = custom_resolve_path(iniPath, custom_setting(ini, key));
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uMode", static_cast<unsigned>(i + 1));
-        variable.jsonMode = _wcsicmp(custom_setting(iniPath, key).c_str(), L"json") == 0;
+        variable.jsonMode = _wcsicmp(custom_setting(ini, key).c_str(), L"json") == 0;
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uFailValue", static_cast<unsigned>(i + 1));
-        variable.failValue = custom_setting(iniPath, key);
+        variable.failValue = custom_setting(ini, key);
         if (variable.failValue.empty()) variable.failValue = globalFail.empty() ? L"N/A" : globalFail;
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uRefreshSec", static_cast<unsigned>(i + 1));
-        variable.refreshSeconds = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"CustomVars", key, static_cast<UINT>(globalRefreshSeconds), iniPath.c_str())), 1, 86400);
+        variable.refreshSeconds = std::clamp(ini_get_int(ini, L"CustomVars", key, globalRefreshSeconds), 1, 86400);
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uMaxChars", static_cast<unsigned>(i + 1));
-        variable.maxChars = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"CustomVars", key, static_cast<UINT>(globalMaxChars), iniPath.c_str())), 1, 4096);
+        variable.maxChars = std::clamp(ini_get_int(ini, L"CustomVars", key, globalMaxChars), 1, 4096);
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uWhitespace", static_cast<unsigned>(i + 1));
-        const std::wstring whitespace = custom_setting(iniPath, key);
+        const std::wstring whitespace = custom_setting(ini, key);
         variable.keepWhitespace = _wcsicmp((whitespace.empty() ? globalWhitespace : whitespace).c_str(), L"keep") == 0;
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uJsonStringify", static_cast<unsigned>(i + 1));
-        variable.jsonStringify = GetPrivateProfileIntW(L"CustomVars", key, 0, iniPath.c_str()) != 0;
+        variable.jsonStringify = ini_get_int(ini, L"CustomVars", key, 0) != 0;
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uJsonNullAsEmpty", static_cast<unsigned>(i + 1));
-        variable.jsonNullAsEmpty = GetPrivateProfileIntW(L"CustomVars", key, 0, iniPath.c_str()) != 0;
+        variable.jsonNullAsEmpty = ini_get_int(ini, L"CustomVars", key, 0) != 0;
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uJsonDefault", static_cast<unsigned>(i + 1));
-        variable.jsonDefault = custom_setting(iniPath, key);
+        variable.jsonDefault = custom_setting(ini, key);
         swprintf_s(key, ARRAYSIZE(key), L"Custom%uJsonValue", static_cast<unsigned>(i + 1));
-        variable.jsonValue = custom_setting(iniPath, key);
+        variable.jsonValue = custom_setting(ini, key);
         variable.value.clear();
         variable.nextRefreshTick = 0;
     }

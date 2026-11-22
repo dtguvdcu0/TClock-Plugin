@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include "../../common/ini_text.h"
 
 namespace tcard_lang {
 
@@ -122,9 +123,9 @@ inline void initialize()
     GetPrivateProfileStringW(L"TCard", L"Language", L"", configured, ARRAYSIZE(configured), config_path().c_str());
     if (!configured[0]) {
         const std::wstring parentIni = module_dir() + L"\\..\\tclock-win11.ini";
-        wchar_t inherited[16]{};
-        GetPrivateProfileStringW(L"Main", L"EnglishMenu", L"", inherited, ARRAYSIZE(inherited), parentIni.c_str());
-        const wchar_t* code = wcscmp(inherited, L"0") == 0 ? L"ja" : wcscmp(inherited, L"1") == 0 ? L"en" : nullptr;
+        // The TClock host INI is UTF-8 without BOM; read it without the Profile API.
+        const std::wstring inherited = ini_read_string(parentIni, L"Main", L"EnglishMenu", L"");
+        const wchar_t* code = inherited == L"0" ? L"ja" : inherited == L"1" ? L"en" : nullptr;
         if (code) {
             wcscpy_s(configured, code);
             WritePrivateProfileStringW(L"TCard", L"Language", code, config_path().c_str());

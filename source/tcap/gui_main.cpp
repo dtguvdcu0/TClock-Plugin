@@ -482,6 +482,8 @@ bool triggerCapture(AppState& app, int profileIndex) {
 }
 
 
+static bool readIniValueUtf8(const fs::path& path, const std::string& sectionLower, const std::string& keyLower, std::string& value);
+
 fs::path resolveTClockIniPath(AppState& app) {
     if (!app.tclockIniPath.empty()) {
         return app.tclockIniPath;
@@ -489,14 +491,11 @@ fs::path resolveTClockIniPath(AppState& app) {
 
     fs::path tcapIniPath = app.iniPath.empty() ? (app.exeDir / "TCapture.ini") : app.iniPath;
     fs::path baseDir = tcapIniPath.parent_path().empty() ? app.exeDir : tcapIniPath.parent_path();
-    std::wstring tcapIniW = tcapIniPath.wstring();
-    wchar_t configured[MAX_PATH] = {};
-
-    GetPrivateProfileStringW(L"Integration", L"TClockIniPath", L"", configured, MAX_PATH, tcapIniW.c_str());
-
+    // TCapture.ini is UTF-8 (written by TCapture and by the TClock host); the Profile API would decode it as ACP.
+    std::string configured;
     fs::path resolved;
-    if (configured[0] != L'\0') {
-        resolved = fs::path(configured);
+    if (readIniValueUtf8(tcapIniPath, "integration", "tclockinipath", configured) && !configured.empty()) {
+        resolved = fs::path(utf8ToWide(configured));
         if (resolved.is_relative()) {
             resolved = baseDir / resolved;
         }
@@ -587,6 +586,37 @@ static bool isSectionHeader(const std::string& line, std::string& sectionLower)
     if (t.front() != '[' || t.back() != ']') return false;
     sectionLower = toLower(trimCopy(t.substr(1, t.size() - 2)));
     return !sectionLower.empty();
+}
+
+// Reads one value from a UTF-8 INI (optional BOM) with Profile API lookup rules: first matching
+// section and key, case-insensitive, ';' comments skipped, one pair of enclosing quotes removed.
+static bool readIniValueUtf8(const fs::path& path, const std::string& sectionLower, const std::string& keyLower, std::string& value)
+{
+    std::vector<std::string> lines;
+    bool hasBom = false;
+    bool useCrLf = true;
+    if (!readTextLinesPreserve(path, lines, hasBom, useCrLf)) return false;
+    bool inSection = false;
+    for (const auto& line : lines) {
+        std::string header;
+        if (isSectionHeader(line, header)) {
+            if (inSection) return false;
+            inSection = (header == sectionLower);
+            continue;
+        }
+        if (!inSection) continue;
+        const std::string t = trimCopy(line);
+        if (t.empty() || t.front() == ';') continue;
+        std::string key;
+        std::string raw;
+        if (!parseIniKeyValue(t, key, raw) || key != keyLower) continue;
+        if (raw.size() >= 2 && ((raw.front() == '"' && raw.back() == '"') || (raw.front() == '\'' && raw.back() == '\''))) {
+            raw = raw.substr(1, raw.size() - 2);
+        }
+        value = raw;
+        return true;
+    }
+    return false;
 }
 
 static bool isManagedHotkeyKey(const std::string& keyLower)
@@ -927,7 +957,7 @@ std::vector<std::string> listAvailableLanguages(const fs::path& root) {
         if (!entry.is_directory()) continue;
         fs::path ini = entry.path() / "strings.ini";
         if (fs::exists(ini)) {
-            codes.push_back(toLower(entry.path().filename().string()));
+            codes.push_back(toLower(wideToUtf8(entry.path().filename().wstring())));
         }
     }
     std::sort(codes.begin(), codes.end());
@@ -1064,8 +1094,12 @@ void registerAllHotkeys(AppState& app) {
 void openOutputFolder(const AppState& app, int profileIndex) {
     if (profileIndex < 0 || profileIndex >= static_cast<int>(app.profiles.size())) return;
     const auto& s = app.profiles[profileIndex].settings;
-    fs::path dir = s.outputDir.empty() ? fs::path(".") : fs::path(s.outputDir);
-    fs::path base = app.iniPath.empty() ? app.exeDir : app.iniPath.parent_path();
+    fs::path dir = s.outputDir.empty() ? fs::path(L".") : fs::path(utf8ToWide(s.outputDir));
+    // Captures resolve a relative output_dir against the process CWD (the TClock folder when TClock launches
+    // TCapture), so open the same folder the images were written to.
+    std::error_code cwdError;
+    fs::path base = fs::current_path(cwdError);
+    if (cwdError || base.empty()) base = app.exeDir;
     if (!dir.is_absolute()) {
         dir = base / dir;
     }

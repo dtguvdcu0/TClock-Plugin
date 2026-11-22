@@ -24,6 +24,7 @@
 
 #include "task_store.h"
 #include "resource.h"
+#include "../../common/ini_text.h"
 
 namespace {
 
@@ -750,8 +751,9 @@ void LoadHostConfigFromIni(const std::filesystem::path& exe_dir, bool smoke_mode
     // Ownership note: Alart toggle is stored in tclock-win11.ini [TCalendar], not in tcalendar.ini.
     const std::filesystem::path tclock_ini_path = ResolveTClockIniFromExe(exe_dir);
     out_config.tclock_ini_file_path = tclock_ini_path.wstring();
+    // The TClock host INI is UTF-8 without BOM; read it without the Profile API.
     out_config.tclock_alert_enabled =
-        GetPrivateProfileIntW(L"TCalendar", L"Alart", 0, out_config.tclock_ini_file_path.c_str()) != 0;
+        ini_read_int(out_config.tclock_ini_file_path, L"TCalendar", L"Alart", 0) != 0;
 
     out_config.enable_task_start_notify = out_config.tclock_alert_enabled;
 

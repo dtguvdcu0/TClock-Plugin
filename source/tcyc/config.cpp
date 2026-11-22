@@ -3,6 +3,7 @@
 
 #include <windows.h>
 #include <shlwapi.h>
+#include "../common/ini_text.h"
 #include <time.h>
 #include <stdexcept>
 
@@ -339,11 +340,8 @@ bool LoadRuntimeConfig(const std::wstring& iniPath, const std::wstring& exeDir, 
 bool IsTClockGateDisabled(const RuntimeConfig& config) {
     const DWORD attrs = GetFileAttributesW(config.tclockIniPath.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
-    const int gate = static_cast<int>(GetPrivateProfileIntW(
-        L"TCycle",
-        L"Enabled",
-        1,
-        config.tclockIniPath.c_str()));
+    // The TClock host INI is UTF-8 without BOM; read it without the Profile API.
+    const int gate = ini_read_int(config.tclockIniPath, L"TCycle", L"Enabled", 1);
     return gate == 0;
 }
 
