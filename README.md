@@ -1,26 +1,24 @@
 ﻿# TClock-Plugin
 
-TClockで連動させたかった機能の中で、タスクバー時計改造の趣旨から外れていたツールを分離
-必要であればTClockのpluginsフォルダに追加してください。
-プロパティの拡張機能で設定できます。
+TClock本体から外した機能や、タスクバー時計の枠を超えるツールを、任意で追加できるプラグイン形式で配布します。
 
 ![TClock](screenshots/tclock.png)
 
 
 ## ダウンロード
 
-使いたいプラグインのZIPをダウンロードし、展開したファイルをTClockの `plugins` フォルダーにコピーしてください。
+使いたいプラグインの ZIP を展開し、中身を TClock の `plugins` フォルダーにコピーしてください。（フォルダーがなければ作成してください。）追加したプラグインは、TClock の「プロパティ」→「拡張機能」から設定できます。
 
 | プラグイン | ダウンロード |
 |---|---|
 | TCard（付箋・メモ） | [TCard.zip](https://github.com/dtguvdcu0/TClock-Plugin/releases/latest/download/TCard.zip) |
 | TCycle（タスク自動実行） | [TCycle.zip](https://github.com/dtguvdcu0/TClock-Plugin/releases/latest/download/TCycle.zip) |
 | TCapture（画面キャプチャ） | [TCapture.zip](https://github.com/dtguvdcu0/TClock-Plugin/releases/latest/download/TCapture.zip) |
-| TCalendar（カレンダー） | [TCalendar.zip] |
+| TCalendar（カレンダー） | 改装中 |
 | UtilityPack（ユーティリティパック） | [UtilityPack.zip](https://github.com/dtguvdcu0/TClock-Plugin/releases/latest/download/UtilityPack.zip) |
 | 色設定2 | [ColorSettings2.zip](https://github.com/dtguvdcu0/TClock-Plugin/releases/latest/download/ColorSettings2.zip) |
 
-各プラグインの更新内容は [Releases](https://github.com/dtguvdcu0/TClock-Plugin/releases) を参照してください。
+各プラグインの更新内容は [Releases](https://github.com/dtguvdcu0/TClock-Plugin/releases) で案内する予定です。
 
 ## TCard（付箋・メモ）
 
@@ -52,4 +50,4 @@ Windowsのツール・設定画面・フォルダーを開く操作や、管理�
 
 ## 色設定2
 
-オミットした色設定2をメニューに追加します。
+オミットした色設定2の設定画面をメニューに追加します。
