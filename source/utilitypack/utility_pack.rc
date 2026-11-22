@@ -11,14 +11,14 @@ STRINGTABLE
 BEGIN
     TC_PLUGIN_HEADER_ID "tclock.plugin/1:utility.pack"
     TC_PLUGIN_NAME_ID "UtilityPack"
-    TC_PLUGIN_DESCRIPTION_ID "Adds builtin operations that open Windows tools, settings pages and folders, and run administrator commands. Choose the items in Settings."
+    TC_PLUGIN_DESCRIPTION_ID "Choose items for the context menu and mouse actions to add as built-in commands.\r\nDownload: https://github.com/dtguvdcu0/TClock-Plugin"
 END
 
 LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
 STRINGTABLE
 BEGIN
     TC_PLUGIN_NAME_ID "ユーティリティパック"
-    TC_PLUGIN_DESCRIPTION_ID "Windowsのツール・設定画面・フォルダーを開く操作や、管理者コマンドをビルトイン操作に追加します。追加する項目は「設定」で選べます。"
+    TC_PLUGIN_DESCRIPTION_ID "右クリックメニューやマウス操作で使う追加項目を選び、ビルトインに追加します。\r\n配布元: https://github.com/dtguvdcu0/TClock-Plugin"
 END
 
 LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL

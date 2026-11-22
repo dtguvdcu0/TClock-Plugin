@@ -9,7 +9,7 @@ BEGIN
     TC_PLUGIN_HEADER_ID "tclock.plugin/1:color.settings2"
     TC_PLUGIN_NAME_ID "Color Settings 2"
     TC_PLUGIN_SETTINGS_HINT_ID "none"
-    TC_PLUGIN_DESCRIPTION_ID "Adds an embedded Colors 2 property page and text color policy."
+    TC_PLUGIN_DESCRIPTION_ID "Adds an embedded Colors 2 property page and text color policy.\r\nDownload: https://github.com/dtguvdcu0/TClock-Plugin"
 END
 
 1 VERSIONINFO
@@ -46,7 +46,7 @@ LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
 STRINGTABLE
 BEGIN
     TC_PLUGIN_NAME_ID "色設定2"
-    TC_PLUGIN_DESCRIPTION_ID "土曜・日曜・祝日・VPN接続中の文字色を設定します。プロパティの「色設定2」で変更できます。"
+    TC_PLUGIN_DESCRIPTION_ID "土曜・日曜・祝日・VPN接続中の文字色を設定します。プロパティの「色設定2」で変更できます。\r\n配布元: https://github.com/dtguvdcu0/TClock-Plugin"
 END
 LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 101 DIALOGEX 0, 0, 210, 230

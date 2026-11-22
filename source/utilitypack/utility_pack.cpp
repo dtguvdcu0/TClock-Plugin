@@ -298,7 +298,7 @@ void init_dialog(HWND dialog, Dialog& state)
 {
     const bool ja = japanese(state.language);
     SetWindowTextW(dialog, ja ? L"ユーティリティパックの設定" : L"UtilityPack settings");
-    add(dialog, L"STATIC", ja ? L"チェックした項目を、右クリックメニューやマウス操作の「操作」から選べるようにします。\r\n使用中の項目をオフにすると、その割り当ては動作しなくなります。"
+    add(dialog, L"STATIC", ja ? L"右クリックメニューやマウス操作で使う追加項目を選び、ビルトインに追加します。"
         : L"Checked items appear as operations for menus and mouse clicks.\r\nTurning off an item in use disables its assignment.", SS_NOPREFIX, kNote);
     HWND list = add(dialog, WC_LISTVIEWW, L"", WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_SHOWSELALWAYS, kList);
     add(dialog, L"BUTTON", ja ? L"すべてオン" : L"Turn all on", WS_TABSTOP | BS_PUSHBUTTON, kAllOn);
